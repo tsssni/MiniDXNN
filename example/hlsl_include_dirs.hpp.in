@@ -1,0 +1,39 @@
+/*!
+  \file hlsl_include_dirs.hpp
+  \author Sho Ikeda
+  \brief No brief description
+  \copyright Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
+
+  SPDX-License-Identifier: MIT
+*/
+
+#ifndef MINIDXNN_HLSL_INCLUDE_DIRS_HPP
+#define MINIDXNN_HLSL_INCLUDE_DIRS_HPP 1
+
+// Standard C++ library
+#include <array>
+#include <filesystem>
+// 
+#include "common/utility.hpp"
+
+namespace ex {
+
+inline
+auto getHlslIncludeDirList() noexcept -> std::array<OptionString, 2>
+{
+  const std::array dirList = std::to_array<OptionString>({
+      createOptionString("@mininn_dxc_include_dir@"),
+      createOptionString("@mininn_mlp_include_dir@"),
+  });
+  return dirList;
+}
+
+inline
+auto getComputeShaderDir() noexcept -> std::filesystem::path
+{
+  return std::filesystem::path{"@mininn_compute_shader_dir@"};
+}
+
+} /* namespace ex */
+
+#endif /* MINIDXNN_HLSL_INCLUDE_DIRS_HPP */

@@ -1,0 +1,74 @@
+/*!
+  \file simple_mlp_inference_test.comp
+  \author Sho Ikeda
+  \brief Test kernel for MLP inference with FP16
+  \copyright Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
+
+  SPDX-License-Identifier: MIT
+*/
+
+#include "mlp.hlsl"
+
+ByteAddressBuffer InputBuffer;
+RWByteAddressBuffer OutputBuffer;
+ByteAddressBuffer WeightBuffer;
+ByteAddressBuffer BiasBuffer;
+
+template <typename Type>
+void testMlpInference(const uint groupId, const uint groupThreadId)
+{
+  const dx::linalg::DataType elemType = mininn::impl::TypeTraits<Type>::COMPONENT_TYPE;
+  const uint numThreadsX = MINIDXNN_NUM_THREADS_X;
+  const uint numTasks = MINIDXNN_NUM_TASKS;
+  const int inputDim = MINIDXNN_INPUT_DIMENSION;
+  const int outputDim = MINIDXNN_OUTPUT_DIMENSION;
+  const uint numHiddenLayers = MINIDXNN_NUM_HIDDEN_LAYERS;
+  const int hiddenLayerDim = MINIDXNN_HIDDEN_LAYER_DIMENSIONS;
+  const dx::linalg::MatrixLayout weightMatrixLayout = (dx::linalg::MatrixLayout)MINIDXNN_WEIGHT_MATRIX_LAYOUT;
+  const bool isWeightMatrixTransposed = MINIDXNN_IS_WEIGHT_MATRIX_TRANSPOSED != 0;
+  const uint weightAlignment = MINIDXNN_WEIGHT_ALIGNMENT;
+  const uint weightStrideAlignment = MINIDXNN_WEIGHT_STRIDE_ALIGNMENT;
+  const uint biasAlignment = MINIDXNN_BIAS_ALIGNMENT;
+  using InputVecT = vector<Type, inputDim>;
+  using OutputVecT = vector<Type, outputDim>;
+  using ActivationHiddenT = mininn:: MINIDXNN_ACTIVATION_HIDDEN_TYPE;
+  using ActivationLastT = mininn:: MINIDXNN_ACTIVATION_LAST_TYPE;
+  using BufferManipT = mininn::impl::BufferManip<Type>;
+#if MINIDXNN_HAS_BIAS != 0
+  using LayerDataRef = mininn::InferenceLayerDataRef<numHiddenLayers, hiddenLayerDim, elemType, weightMatrixLayout, elemType, elemType, ActivationHiddenT, ActivationLastT, elemType, isWeightMatrixTransposed, weightAlignment, weightStrideAlignment, biasAlignment>;
+#else // MINIDXNN_HAS_BIAS
+  using LayerDataRef = mininn::InferenceLayerDataRefNoBias<numHiddenLayers, hiddenLayerDim, elemType, weightMatrixLayout, elemType, ActivationHiddenT, ActivationLastT, elemType, isWeightMatrixTransposed, weightAlignment, weightStrideAlignment, biasAlignment>;
+#endif // MINIDXNN_HAS_BIAS
+
+  const uint threadId = groupId * numThreadsX + groupThreadId;
+  if (numTasks <= threadId)
+    return;
+
+  const InputVecT input = BufferManipT::template loadVec<inputDim>(InputBuffer, threadId * sizeof(InputVecT));
+
+  // Create layer parameters
+  LayerDataRef layerData;
+  layerData.setWeightData(WeightBuffer);
+  if (LayerDataRef::HAS_BIAS) {
+    layerData.setBiasData(BiasBuffer);
+  }
+
+  // Inference
+  OutputVecT output = (OutputVecT)0;
+  mininn::forward(output, input, layerData);
+
+  // Store the results
+  BufferManipT::template storeVec<outputDim>(OutputBuffer, threadId * sizeof(OutputVecT), output);
+}
+
+[numthreads(MINIDXNN_NUM_THREADS_X, 1, 1)]
+void testMlpInferenceF32Kernel(const uint3 groupThreadId : SV_GroupThreadID, const uint3 groupId : SV_GroupID)
+{
+  testMlpInference<float32_t>(groupId.x, groupThreadId.x);
+}
+
+[numthreads(MINIDXNN_NUM_THREADS_X, 1, 1)]
+void testMlpInferenceF16Kernel(const uint3 groupThreadId : SV_GroupThreadID, const uint3 groupId : SV_GroupID)
+{
+  testMlpInference<float16_t>(groupId.x, groupThreadId.x);
+}

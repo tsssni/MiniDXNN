@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  file: half.natvis
+  author: Sho Ikeda
+
+  Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
+
+  SPDX-License-Identifier: MIT
+-->
+<AutoVisualizer xmlns="http://schemas.microsoft.com/vstudio/debugger/natvis/2010">
+  <!-- 
+    Visualizer for half.sourceforge.net library 
+    Target type: half_float::half
+    Internal storage: unsigned short data_ (based on common versions)
+  -->
+  <Type Name="half_float::half">
+    <DisplayString Condition="((data_ &amp; 0x7C00) == 0x7C00) &amp;&amp; ((data_ &amp; 0x03FF) != 0)">nan</DisplayString>
+    <DisplayString Condition="((data_ &amp; 0x7FFF) == 0x7C00)">+inf</DisplayString>
+    <DisplayString Condition="((data_ &amp; 0xFFFF) == 0xFC00)">-inf</DisplayString>
+    <!-- Subnormal value -->
+    <DisplayString Condition="((data_ &amp; 0x7C00) == 0)">
+      {( (data_ &amp; 0x8000) ? -1.0f : 1.0f ) * (float)(data_ &amp; 0x03FF) / 16777216.0f}
+    </DisplayString>
+    <!-- Normal value -->
+    <DisplayString>
+      {( (data_ &amp; 0x8000) ? -1.0f : 1.0f ) * ( 1.0f + (float)(data_ &amp; 0x03FF) / 1024.0f ) * ( (float)(1 &lt;&lt; ((data_ &gt;&gt; 10) &amp; 0x1F)) / 32768.0f )}
+    </DisplayString>
+    <Expand>
+      <Item Name="[float]" Condition="((data_ &amp; 0x7C00) == 0)">
+        ( (data_ &amp; 0x8000) ? -1.0f : 1.0f ) * (float)(data_ &amp; 0x03FF) / 16777216.0f
+      </Item>
+      <Item Name="[float]" Condition="((data_ &amp; 0x7C00) == 0x7C00)">
+        ( (data_ &amp; 0x03FF) == 0 ) ? ( (data_ &amp; 0x8000) ? -1.0f/0.0f : 1.0f/0.0f ) : 0.0f/0.0f
+      </Item>
+      <Item Name="[float]" Condition="((data_ &amp; 0x7C00) != 0) &amp;&amp; ((data_ &amp; 0x7C00) != 0x7C00)">
+        ( (data_ &amp; 0x8000) ? -1.0f : 1.0f ) * ( 1.0f + (float)(data_ &amp; 0x03FF) / 1024.0f ) * ( (float)(1 &lt;&lt; ((data_ &gt;&gt; 10) &amp; 0x1F)) / 32768.0f )
+      </Item>
+      <Item Name="[raw hex]">data_,x</Item>
+      <Item Name="[raw binary]">data_,b</Item>
+    </Expand>
+  </Type>
+</AutoVisualizer>
+
