@@ -1,7 +1,7 @@
 /*!
   \file hlsl_include_dirs.hpp
   \author Sho Ikeda
-  \brief No brief description
+  \brief CMake-configured HLSL include directory paths for shader compilation
   \copyright Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
   SPDX-License-Identifier: MIT

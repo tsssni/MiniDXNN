@@ -1,7 +1,7 @@
 /*!
   \file gfx_utility.hpp
   \author Sho Ikeda
-  \brief No brief description
+  \brief GFX utility functions for GPU context, buffer, program, and kernel management
   \copyright Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
   SPDX-License-Identifier: MIT
@@ -23,7 +23,7 @@
 #include <vector>
 // GFX
 #include "gfx.h"
-//
+// Example
 #include "mlp_layer.hpp"
 #include "utility.hpp"
 
@@ -38,6 +38,7 @@ struct BindingData
 
 using BufferBindingDataT = BindingData<GfxBuffer>;
 using IntBindingDataT = BindingData<std::int32_t>;
+using FloatBindingDataT = BindingData<float>;
 
 [[nodiscard]]
 inline
@@ -51,6 +52,13 @@ inline
 auto bind(const std::int32_t value, const std::string_view name) -> IntBindingDataT
 {
   return IntBindingDataT{value, name};
+}
+
+[[nodiscard]]
+inline
+auto bind(const float value, const std::string_view name) -> FloatBindingDataT
+{
+  return FloatBindingDataT{value, name};
 }
 
 [[nodiscard]]
@@ -86,7 +94,9 @@ auto mapToCpu(GfxContext context, GfxBuffer buffer) -> std::span<Type>
   return std::span<Type>{gfxBufferGetData<Type>(context, buffer), size};
 }
 
-auto runKernel(GfxContext context, GfxProgram program, GfxKernel kernel, const size_t threadGroupSize = 1, std::initializer_list<BufferBindingDataT> bufferList = {}, std::initializer_list<IntBindingDataT> intList = {}, OptionalRef<float> execTimeInMs = std::nullopt) -> void;
+auto runKernel(GfxContext context, GfxProgram program, GfxKernel kernel, const size_t threadGroupSize = 1, std::initializer_list<BufferBindingDataT> bufferList = {}, std::initializer_list<IntBindingDataT> intList = {}, OptionalRef<float> execTimeInMs = std::nullopt, std::initializer_list<FloatBindingDataT> floatList = {}) -> void;
+
+auto runKernel(GfxContext context, GfxProgram program, GfxKernel kernel, const size_t threadGroupSize, std::span<const BufferBindingDataT> bufferList, std::initializer_list<IntBindingDataT> intList = {}, OptionalRef<float> execTimeInMs = std::nullopt, std::initializer_list<FloatBindingDataT> floatList = {}) -> void;
 
 class GfxAssertTrue
 {
@@ -112,15 +122,15 @@ auto createGfxBuffer(GfxContext context, const size_t size, const GfxCpuAccess c
 {
   const size_t sizeInBytes = size * sizeof(Type);
   GfxBuffer buffer = gfxCreateBuffer(context, sizeInBytes, nullptr, cpuAccess);
-  std::shared_ptr<GfxBuffer> sharedBuffer{new GfxBuffer{buffer}, [context](GfxBuffer* buffer)
+  std::shared_ptr<GfxBuffer> sharedBuffer(new GfxBuffer{buffer}, [context](GfxBuffer* ptr)
   {
-    if (buffer != nullptr) {
-      if (*buffer) {
-        GfxAssertTrue{}(gfxDestroyBuffer(context, *buffer), "Destroying the buffer failed.");
+    if (ptr != nullptr) {
+      if (*ptr) {
+        GfxAssertTrue{}(gfxDestroyBuffer(context, *ptr), "Destroying the buffer failed.");
       }
-      delete buffer;
+      delete ptr;
     }
-  }};
+  });
   return sharedBuffer;
 }
 
@@ -129,15 +139,15 @@ auto createGfxBuffer(GfxContext context, std::span<const Type> data, const GfxCp
 {
   const size_t sizeInBytes = data.size() * sizeof(Type);
   GfxBuffer buffer = gfxCreateBuffer(context, sizeInBytes, static_cast<void const*>(data.data()), cpuAccess);
-  std::shared_ptr<GfxBuffer> sharedBuffer{new GfxBuffer{buffer}, [context](GfxBuffer* buffer)
+  std::shared_ptr<GfxBuffer> sharedBuffer(new GfxBuffer{buffer}, [context](GfxBuffer* ptr)
   {
-    if (buffer != nullptr) {
-      if (*buffer) {
-        GfxAssertTrue{}(gfxDestroyBuffer(context, *buffer), "Destroying the buffer failed.");
+    if (ptr != nullptr) {
+      if (*ptr) {
+        GfxAssertTrue{}(gfxDestroyBuffer(context, *ptr), "Destroying the buffer failed.");
       }
-      delete buffer;
+      delete ptr;
     }
-  }};
+  });
   return sharedBuffer;
 }
 
@@ -147,14 +157,15 @@ auto convertToMatrixBuffer(GfxContext context,
                            const size_t outputDim,
                            const std::span<const Type> data,
                            const MatrixLayout layout,
+                           std::span<size_t> matrixStrideListOut,
                            const size_t alignment = MATRIX_ALIGNMENT,
-                           const size_t strideAlignment = MATRIX_STRIDE_ALIGNMENT) -> std::shared_ptr<GfxBuffer>
+                           const size_t strideAlignment = MATRIX_VECTOR_STRIDE_ALIGNMENT) -> std::shared_ptr<GfxBuffer>
 {
   std::vector<std::span<const Type>> layerDataList;
   layerDataList.emplace_back(data);
   std::vector<std::tuple<size_t, size_t>> layerInfoList;
   layerInfoList.emplace_back(inputDim, outputDim);
-  const std::vector bufferData = ex::packMatrixData<Type>(layerDataList, layerInfoList, layout, alignment, strideAlignment);
+  const std::vector bufferData = ex::packMatrixData<Type>(layerDataList, layerInfoList, layout, matrixStrideListOut, alignment, strideAlignment);
   std::shared_ptr buffer = ex::createGfxBuffer<Type>(context, bufferData);
   return buffer;
 }
@@ -163,8 +174,9 @@ template <Arithmetic Type> inline
 auto convertToMatrixBuffer(GfxContext context,
                            const std::span<const MlpLayer<Type, Type>> data,
                            const MatrixLayout layout,
+                           std::span<size_t> matrixStrideListOut,
                            const size_t alignment = MATRIX_ALIGNMENT,
-                           const size_t strideAlignment = MATRIX_STRIDE_ALIGNMENT) -> std::shared_ptr<GfxBuffer>
+                           const size_t strideAlignment = MATRIX_VECTOR_STRIDE_ALIGNMENT) -> std::shared_ptr<GfxBuffer>
 {
   using MlpLayerT = MlpLayer<Type, Type>;
   std::vector<std::span<const Type>> layerDataList;
@@ -175,7 +187,7 @@ auto convertToMatrixBuffer(GfxContext context,
     layerDataList.emplace_back(layer.weightData());
     layerInfoList.emplace_back(layer.inputDimension(), layer.outputDimension());
   }
-  const std::vector bufferData = ex::packMatrixData<Type>(layerDataList, layerInfoList, layout, alignment, strideAlignment);
+  const std::vector bufferData = ex::packMatrixData<Type>(layerDataList, layerInfoList, layout, matrixStrideListOut, alignment, strideAlignment);
   std::shared_ptr buffer = ex::createGfxBuffer<Type>(context, bufferData);
   return buffer;
 }

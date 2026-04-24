@@ -33,7 +33,8 @@ function(buildUnittest target)
 
   # Copy runtime DLLs to the binary directory (Windows only)
   # This ensures DirectX 12 runtime DLLs are available alongside the executable
-  if(WIN32)
+  # Skip when building in C++ fallback mode (no GFX DLLs to copy)
+  if(WIN32 AND NOT MINIDXNN_CPP_FALLBACK_ONLY)
     add_custom_command(TARGET ${target} POST_BUILD
       COMMAND ${CMAKE_COMMAND} -E copy_if_newer $<TARGET_RUNTIME_DLLS:${target}> $<TARGET_FILE_DIR:${target}>
       COMMAND_EXPAND_LISTS

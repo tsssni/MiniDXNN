@@ -1,7 +1,7 @@
 /*!
   \file linear_algebra_test.comp
   \author Sho Ikeda
-  \brief Test kernel for MLP inference with FP16
+  \brief Test kernel for matrix-vector multiplication and vector accumulation
   \copyright Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
   SPDX-License-Identifier: MIT
@@ -14,37 +14,34 @@ RWByteAddressBuffer OutputBuffer;
 ByteAddressBuffer WeightBuffer;
 ByteAddressBuffer BiasBuffer;
 
-
 template <typename Type>
-void testLinearAlgebraMul(const uint groupId, const uint groupThreadId)
+void testLinearAlgebraMul(const uint threadId)
 {
   const dx::linalg::DataType elemType = mininn::impl::TypeTraits<Type>::COMPONENT_TYPE;
-  const uint numThreadsX = MINIDXNN_NUM_THREADS_X;
   const uint numTasks = MINIDXNN_NUM_TASKS;
   const int rowSize = MINIDXNN_ROW_SIZE;
   const int columnSize = MINIDXNN_COLUMN_SIZE;
   const dx::linalg::MatrixLayout weightMatrixLayout = (dx::linalg::MatrixLayout)MINIDXNN_WEIGHT_MATRIX_LAYOUT;
-  const bool isWeightMatrixTransposed = MINIDXNN_IS_WEIGHT_MATRIX_TRANSPOSED != 0;
-  const uint matrixStrideAlignment = MINIDXNN_MATRIX_STRIDE_ALIGNMENT;
+  const bool isWeightMatrixTransposed = MINIDXNN_WEIGHT_MATRIX_IS_TRANSPOSED != 0;
+  const uint matrixVectorStrideAlignment = MINIDXNN_MATRIX_VECTOR_STRIDE_ALIGNMENT;
   using InputVecT = vector<Type, columnSize>;
   using OutputVecT = vector<Type, rowSize>;
-  using BufferManipT = mininn::impl::BufferManip<Type>;
+  using VectorBufferAccessorT = mininn::impl::VectorBufferAccessor<Type>;
 
-  const uint threadId = groupId * numThreadsX + groupThreadId;
   if (numTasks <= threadId)
     return;
 
   // Load the inputs
-  const InputVecT input = BufferManipT::template loadVec<columnSize>(InputBuffer, threadId * sizeof(InputVecT));
-
-  // Multiply the weight by the input 
-  OutputVecT output = (OutputVecT)0;
+  const InputVecT input = VectorBufferAccessorT::template load<columnSize>(InputBuffer, threadId * sizeof(InputVecT));
 
   // Create a matrix reference
-  using MatrixT = dx::linalg::MatrixRef<elemType, rowSize, columnSize, weightMatrixLayout, isWeightMatrixTransposed>;
-  const uint stride = mininn::impl::getWeightMatrixStride<rowSize, columnSize, elemType, weightMatrixLayout, matrixStrideAlignment>();
-  MatrixT matrix = {WeightBuffer, 0, stride};
+  using WeightRefT = mininn::MatrixData<mininn::CacheMethod::CACHE>::Ref<ByteAddressBuffer, elemType, weightMatrixLayout, 1, 1, matrixVectorStrideAlignment>;
+  using DxMatrixT = typename WeightRefT::template DxMatrixRef<rowSize, columnSize, isWeightMatrixTransposed>;
+  const uint32_t2 matrixSize = {0, 0}; // it's not used in this test
+  WeightRefT weightBuffer = {WeightBuffer, 0u, matrixSize};
+  DxMatrixT matrix = weightBuffer.template makeDxMatrixRef<rowSize, columnSize, isWeightMatrixTransposed>(0);
 
+  OutputVecT output = (OutputVecT)0;
   using LinAlg = mininn::impl::LinearAlgebra;
 #if defined(MINIDXNN_HAS_BIAS) && (MINIDXNN_HAS_BIAS != 0)
   // Create a bias reference
@@ -57,17 +54,55 @@ void testLinearAlgebraMul(const uint groupId, const uint groupThreadId)
 #endif // MINIDXNN_HAS_BIAS
 
   // Store the result
-  BufferManipT::template storeVec<rowSize>(OutputBuffer, threadId * sizeof(OutputVecT), output);
+  VectorBufferAccessorT::template store<rowSize>(OutputBuffer, threadId * sizeof(OutputVecT), output);
+}
+
+template <typename Type>
+void testLinearAlgebraVectorAcc(const uint threadId)
+{
+  const dx::linalg::DataType elemType = mininn::impl::TypeTraits<Type>::COMPONENT_TYPE;
+  const uint numTasks = MINIDXNN_NUM_TASKS;
+  const int size = MINIDXNN_COLUMN_SIZE;
+  using InputVecT = vector<Type, size>;
+
+  if (numTasks <= threadId)
+    return;
+
+  // Init the inputs
+  InputVecT input;
+  for (int i = 0; i < size; ++i) {
+    input[i] = (Type)(1u << i);
+  }
+
+  // test
+  dx::linalg::RWVectorRef<elemType> output = {OutputBuffer, 0};
+  mininn::impl::LinearAlgebra::vectorAcc(input, output);
 }
 
 [numthreads(MINIDXNN_NUM_THREADS_X, 1, 1)]
 void testLinearAlgebraMulF32Kernel(const uint3 groupThreadId : SV_GroupThreadID, const uint3 groupId : SV_GroupID)
 {
-  testLinearAlgebraMul<float32_t>(groupId.x, groupThreadId.x);
+  const uint threadId = groupId.x * MINIDXNN_NUM_THREADS_X + groupThreadId.x;
+  testLinearAlgebraMul<float32_t>(threadId);
 }
 
 [numthreads(MINIDXNN_NUM_THREADS_X, 1, 1)]
 void testLinearAlgebraMulF16Kernel(const uint3 groupThreadId : SV_GroupThreadID, const uint3 groupId : SV_GroupID)
 {
-  testLinearAlgebraMul<float16_t>(groupId.x, groupThreadId.x);
+  const uint threadId = groupId.x * MINIDXNN_NUM_THREADS_X + groupThreadId.x;
+  testLinearAlgebraMul<float16_t>(threadId);
+}
+
+[numthreads(MINIDXNN_NUM_THREADS_X, 1, 1)]
+void testLinearAlgebraVectorAccF32Kernel(const uint3 groupThreadId : SV_GroupThreadID, const uint3 groupId : SV_GroupID)
+{
+  const uint threadId = groupId.x * MINIDXNN_NUM_THREADS_X + groupThreadId.x;
+  testLinearAlgebraVectorAcc<float32_t>(threadId);
+}
+
+[numthreads(MINIDXNN_NUM_THREADS_X, 1, 1)]
+void testLinearAlgebraVectorAccF16Kernel(const uint3 groupThreadId : SV_GroupThreadID, const uint3 groupId : SV_GroupID)
+{
+  const uint threadId = groupId.x * MINIDXNN_NUM_THREADS_X + groupThreadId.x;
+  testLinearAlgebraVectorAcc<float16_t>(threadId);
 }

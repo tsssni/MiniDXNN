@@ -1,0 +1,89 @@
+/*!
+  \file simple_mlp_training_test.comp
+  \author Sho Ikeda
+  \brief Test kernel for MLP training forward and backward passes (FP32 and FP16)
+  \copyright Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
+
+  SPDX-License-Identifier: MIT
+*/
+
+#include "mlp.hlsl"
+#include "mlp_test_common.hlsl"
+
+ByteAddressBuffer InputBuffer;
+ByteAddressBuffer TargetBuffer;
+RWByteAddressBuffer OutputBuffer;
+ByteAddressBuffer WeightBuffer;
+ByteAddressBuffer BiasBuffer;
+RWByteAddressBuffer WeightGradBuffer;
+RWByteAddressBuffer BiasGradBuffer;
+RWByteAddressBuffer LogitsCacheBuffer;
+int TEST_WEIGHT_MATRIX_SIZE_FIRST;
+int TEST_WEIGHT_MATRIX_SIZE_HIDDEN;
+int TEST_BIAS_STRIDE;
+
+template <typename Type>
+void testMlpTrainingForward(const uint threadId)
+{
+  const dx::linalg::DataType elemType = mininn::impl::TypeTraits<Type>::COMPONENT_TYPE;
+  const dx::linalg::MatrixLayout layout = (dx::linalg::MatrixLayout)MINIDXNN_WEIGHT_MATRIX_LAYOUT;
+  using ActivationHiddenT = mininn:: MINIDXNN_ACTIVATION_HIDDEN_TYPE;
+  using ActivationLastT = mininn:: MINIDXNN_ACTIVATION_LAST_TYPE;
+
+  testkernel::trainingForwardStep<Type, MINIDXNN_NUM_LAYERS, MINIDXNN_HIDDEN_LAYER_DIMENSIONS,
+      MINIDXNN_INPUT_DIMENSION, MINIDXNN_OUTPUT_DIMENSION,
+      elemType, layout, ActivationHiddenT, ActivationLastT,
+      MINIDXNN_WEIGHT_MATRIX_ALIGNMENT, MINIDXNN_WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT, MINIDXNN_BIAS_VECTOR_ALIGNMENT,
+      (MINIDXNN_HAS_BIAS != 0)>(
+      threadId, InputBuffer, OutputBuffer, WeightBuffer, BiasBuffer,
+      LogitsCacheBuffer,
+      uint2((uint)TEST_WEIGHT_MATRIX_SIZE_FIRST, (uint)TEST_WEIGHT_MATRIX_SIZE_HIDDEN),
+      MINIDXNN_BATCH_SIZE, (uint)TEST_BIAS_STRIDE);
+}
+
+template <typename Type>
+void testMlpTrainingBackward(const uint threadId)
+{
+  const dx::linalg::DataType elemType = mininn::impl::TypeTraits<Type>::COMPONENT_TYPE;
+  const dx::linalg::MatrixLayout layout = (dx::linalg::MatrixLayout)MINIDXNN_WEIGHT_MATRIX_LAYOUT;
+  using ActivationHiddenT = mininn:: MINIDXNN_ACTIVATION_HIDDEN_TYPE;
+  using ActivationLastT = mininn:: MINIDXNN_ACTIVATION_LAST_TYPE;
+
+  testkernel::trainingBackwardStep<Type, MINIDXNN_NUM_LAYERS, MINIDXNN_HIDDEN_LAYER_DIMENSIONS,
+      MINIDXNN_INPUT_DIMENSION, MINIDXNN_OUTPUT_DIMENSION,
+      elemType, layout, ActivationHiddenT, ActivationLastT,
+      MINIDXNN_WEIGHT_MATRIX_ALIGNMENT, MINIDXNN_WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT, MINIDXNN_BIAS_VECTOR_ALIGNMENT,
+      (MINIDXNN_HAS_BIAS != 0)>(
+      threadId, InputBuffer, TargetBuffer, OutputBuffer, WeightBuffer, BiasBuffer,
+      WeightGradBuffer, BiasGradBuffer, LogitsCacheBuffer,
+      uint2((uint)TEST_WEIGHT_MATRIX_SIZE_FIRST, (uint)TEST_WEIGHT_MATRIX_SIZE_HIDDEN),
+      MINIDXNN_BATCH_SIZE, (uint)TEST_BIAS_STRIDE);
+}
+
+[numthreads(MINIDXNN_NUM_THREADS_X, 1, 1)]
+void testMlpTrainingForwardF32Kernel(const uint3 groupThreadId : SV_GroupThreadID, const uint3 groupId : SV_GroupID)
+{
+  const uint threadId = groupId.x * MINIDXNN_NUM_THREADS_X + groupThreadId.x;
+  testMlpTrainingForward<float32_t>(threadId);
+}
+
+[numthreads(MINIDXNN_NUM_THREADS_X, 1, 1)]
+void testMlpTrainingForwardF16Kernel(const uint3 groupThreadId : SV_GroupThreadID, const uint3 groupId : SV_GroupID)
+{
+  const uint threadId = groupId.x * MINIDXNN_NUM_THREADS_X + groupThreadId.x;
+  testMlpTrainingForward<float16_t>(threadId);
+}
+
+[numthreads(MINIDXNN_NUM_THREADS_X, 1, 1)]
+void testMlpTrainingBackwardF32Kernel(const uint3 groupThreadId : SV_GroupThreadID, const uint3 groupId : SV_GroupID)
+{
+  const uint threadId = groupId.x * MINIDXNN_NUM_THREADS_X + groupThreadId.x;
+  testMlpTrainingBackward<float32_t>(threadId);
+}
+
+[numthreads(MINIDXNN_NUM_THREADS_X, 1, 1)]
+void testMlpTrainingBackwardF16Kernel(const uint3 groupThreadId : SV_GroupThreadID, const uint3 groupId : SV_GroupID)
+{
+  const uint threadId = groupId.x * MINIDXNN_NUM_THREADS_X + groupThreadId.x;
+  testMlpTrainingBackward<float16_t>(threadId);
+}

@@ -18,9 +18,11 @@ project(ThirdParty DESCRIPTION ${project_desc} LANGUAGES CXX)
   add_subdirectory("${PROJECT_SOURCE_DIR}/half_float_dep" "${PROJECT_BINARY_DIR}/half_float_dep")
   checkTarget(half-float-dep)
 
-  # Build graphics library
-  add_subdirectory("${PROJECT_SOURCE_DIR}/gfx_dep" "${PROJECT_BINARY_DIR}/gfx_dep")
-  checkTarget(gfx-dep)
+  # Build graphics library (skip in C++ fallback mode)
+  if(NOT MINIDXNN_CPP_FALLBACK_ONLY)
+    add_subdirectory("${PROJECT_SOURCE_DIR}/gfx_dep" "${PROJECT_BINARY_DIR}/gfx_dep")
+    checkTarget(gfx-dep)
+  endif()
 
   # Build CLI11
   add_subdirectory("${PROJECT_SOURCE_DIR}/cli11_dep" "${PROJECT_BINARY_DIR}/cli11_dep")

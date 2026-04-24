@@ -7,9 +7,9 @@
 # SPDX-License-Identifier: MIT
 #
 
-## Configure MiniDxNN interface library
+## Configure MiniDXNN interface library
 ## Creates an INTERFACE target that links all dependencies
-function(setMiniDxNNCore target)
+function(setMiniDXNNCore target)
   # Dependencies
   if(NOT TARGET Threads::Threads)
     set(THREADS_PREFER_PTHREAD_FLAG ON)
@@ -19,6 +19,17 @@ function(setMiniDxNNCore target)
   add_library(${target} INTERFACE)
 
   #
-  target_include_directories(${target} INTERFACE ${CMAKE_CURRENT_LIST_DIR}/../include)
-  target_link_libraries(${target} INTERFACE Threads::Threads half-float-dep gfx-dep)
-endfunction(setMiniDxNNCore)
+  target_include_directories(${target} SYSTEM INTERFACE ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../include)
+
+  target_link_libraries(${target} INTERFACE Threads::Threads half-float-dep)
+  if(MINIDXNN_CPP_FALLBACK_ONLY)
+    target_compile_definitions(${target} INTERFACE
+      MINIDXNN_CPP_FALLBACK_ONLY=1
+      #MINIDXNN_NO_INCLUDE_DX_LINALG=1
+      #MINIDXNN_USE_SOFTWARE_LINALG_IMPL=1
+      #MINIDXNN_CPP_FALLBACK_HALF_TYPE=half_float::half
+    )
+  else()
+    target_link_libraries(${target} INTERFACE gfx-dep)
+  endif()
+endfunction(setMiniDXNNCore)

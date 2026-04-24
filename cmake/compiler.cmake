@@ -16,10 +16,10 @@
 ##   MINIDXNN_ARCH_FEATURE_LEVEL: CPU architecture level (Amd64V1/V2/V3/V4)
 function(setCxxCompileFlags target scope)
   # Detect compiler type using generator expressions
-  set(has_msvc $<OR:$<C_COMPILER_ID:MSVC>,$<CXX_COMPILER_ID:MSVC>>)
-  set(has_gcc $<OR:$<C_COMPILER_ID:GNU>,$<CXX_COMPILER_ID:GNU>>)
-  set(has_clang $<OR:$<C_COMPILER_ID:Clang>,$<CXX_COMPILER_ID:Clang>,$<C_COMPILER_ID:AppleClang>,$<CXX_COMPILER_ID:AppleClang>>)
-  set(has_apple_clang $<OR:$<C_COMPILER_ID:AppleClang>,$<CXX_COMPILER_ID:AppleClang>>)
+  set(has_msvc $<CXX_COMPILER_ID:MSVC>)
+  set(has_gcc $<CXX_COMPILER_ID:GNU>)
+  set(has_apple_clang $<CXX_COMPILER_ID:AppleClang>)
+  set(has_clang $<OR:$<CXX_COMPILER_ID:Clang>,${has_apple_clang}>)
   
   # Check if using MSVC frontend (e.g., clang-cl)
   set(has_msvc_frontend 0)
@@ -132,14 +132,29 @@ function(setCxxWarningFlags target scope)
   # Check if extra warnings are enabled
   set(has_extra $<BOOL:${MINIDXNN_WARNING_EXTRA}>)
 
-  # Detect compiler type
-  set(has_msvc $<OR:$<C_COMPILER_ID:MSVC>,$<CXX_COMPILER_ID:MSVC>>)
-  set(has_gcc $<OR:$<C_COMPILER_ID:GNU>,$<CXX_COMPILER_ID:GNU>>)
-  set(has_clang $<OR:$<C_COMPILER_ID:Clang>,$<CXX_COMPILER_ID:Clang>,$<C_COMPILER_ID:AppleClang>,$<CXX_COMPILER_ID:AppleClang>>)
+  # Detect compiler type using generator expressions
+  set(has_msvc $<CXX_COMPILER_ID:MSVC>)
+  set(has_gcc $<CXX_COMPILER_ID:GNU>)
+  set(has_apple_clang $<CXX_COMPILER_ID:AppleClang>)
+  set(has_clang $<OR:$<CXX_COMPILER_ID:Clang>,${has_apple_clang}>)
 
   # MSVC warning levels
-  set(msvc_options /W4)        # Warning level 4 (high but reasonable)
-  set(msvc_options_extra /Wall) # All warnings (may be noisy)
+  set(msvc_options /W4 /wd4244)        # Warning level 4 (high but reasonable)
+  set(msvc_options_extra /Wall
+                       /wd4514   # unreferenced inline function removed (informational)
+                       /wd4625   # copy constructor implicitly deleted (GoogleTest)
+                       /wd4626   # copy assignment implicitly deleted (GoogleTest)
+                       /wd4710   # function not inlined (compiler decision, informational)
+                       /wd4711   # function selected for automatic inline expansion (informational)
+                       /wd4820   # struct padding added (informational)
+                       /wd4866   # left-to-right evaluation order (third-party)
+                       /wd4868   # left-to-right evaluation order in braced init (third-party)
+                       /wd5026   # move constructor implicitly deleted (GoogleTest)
+                       /wd5027   # move assignment implicitly deleted (GoogleTest)
+                       /wd5045   # Spectre mitigation insertion (informational)
+                       /wd4324   # structure padded due to alignment specifier
+                       /wd5264   # 'const' variable is not used (used only with GFX)
+                       ) # All warnings with noise suppressions
 
   # GCC warning options
   set(gcc_options -Wall
@@ -174,11 +189,35 @@ function(setCxxWarningFlags target scope)
   if(CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
     # Clang-CL (MSVC-compatible frontend)
     set(clang_options /W4)
-    set(clang_options_extra /Wall -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic)
+    set(clang_options_extra /Wall -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic
+                               -Wno-padded                     # Struct padding is intentional
+                               -Wno-covered-switch-default      # All enum values handled; default added for safety
+                               -Wno-global-constructors         # Google Test macros require global constructors
+                               -Wno-unsafe-buffer-usage         # Clang hardening opt-in; valid pointer usage
+                               -Wno-unsafe-buffer-usage-in-libc-call
+                               -Wno-unsafe-buffer-usage-in-container
+                               -Wno-weak-vtables                # vtable placement hint, not a bug
+                               -Wno-ctad-maybe-unsupported      # CTAD is intentional C++17/20 usage
+                               -Wno-missing-prototypes          # C-only concept, not meaningful for C++
+                               -Wno-unused-template             # Templates in headers may not be used in every TU
+                               -Wno-undefined-func-template     # Template instantiation across TUs is by design
+                               )
   elseif(CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "GNU")
     # Clang with GNU-compatible frontend
     set(clang_options -Wall -Wextra -pedantic)
-    set(clang_options_extra -Weverything -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic)
+    set(clang_options_extra -Weverything -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic
+                           -Wno-padded                     # Struct padding is intentional
+                           -Wno-covered-switch-default      # All enum values handled; default added for -Wswitch-default
+                           -Wno-global-constructors         # Google Test macros require global constructors
+                           -Wno-unsafe-buffer-usage         # Clang hardening opt-in; valid pointer usage
+                           -Wno-unsafe-buffer-usage-in-libc-call
+                           -Wno-unsafe-buffer-usage-in-container
+                           -Wno-weak-vtables                # vtable placement hint, not a bug
+                           -Wno-ctad-maybe-unsupported      # CTAD is intentional C++17/20 usage
+                           -Wno-missing-prototypes          # C-only concept, not meaningful for C++
+                           -Wno-unused-template             # Templates in headers may not be used in every TU
+                           -Wno-undefined-func-template     # Template instantiation across TUs is by design
+                           )
   endif()
 
   # Apply warning flags to target
@@ -201,33 +240,38 @@ endfunction(setCxxWarningFlags)
 function(setSanitizerFlags target scope)
   # Check which sanitizers are enabled via cache options
   set(has_address $<BOOL:${MINIDXNN_ENABLE_SANITIZER_ADDRESS}>)
+  set(has_undef $<BOOL:${MINIDXNN_ENABLE_SANITIZER_UNDEF_BEHAVIOR}>)
   #set(has_thread $<BOOL:${MINIDXNN_ENABLE_SANITIZER_THREAD}>)
   #set(has_memory $<BOOL:${MINIDXNN_ENABLE_SANITIZER_MEMORY}>)
-  #set(has_undef $<BOOL:${MINIDXNN_ENABLE_SANITIZER_UNDEF_BEHAVIOR}>)
-  #set(has_leak $<BOOL:${MINIDXNN_ENABLE_SANITIZER_LEAK}>)
-  #set(has_cfi $<BOOL:${MINIDXNN_ENABLE_SANITIZER_CFI}>)
   #set(has_safe_stack $<BOOL:${MINIDXNN_ENABLE_SANITIZER_SAFE_STACK}>)
 
+  # Detect compiler type using generator expressions
+  set(has_msvc $<CXX_COMPILER_ID:MSVC>)
+  set(has_gcc $<CXX_COMPILER_ID:GNU>)
+  set(has_apple_clang $<CXX_COMPILER_ID:AppleClang>)
+  set(has_clang $<OR:$<CXX_COMPILER_ID:Clang>,${has_apple_clang}>)
+
+  # UBSan: GCC supports a subset; Clang supports additional checks
+  set(ubsan_gcc -fsanitize=undefined,float-divide-by-zero)
+  set(ubsan_clang -fsanitize=undefined,float-divide-by-zero,unsigned-integer-overflow,implicit-conversion,local-bounds,nullability)
+
   # Apply sanitizer compile options
-  # TODO: Support other sanitizers
   target_compile_options(${target} ${scope}
     $<${has_address}:-fsanitize=address;-fno-omit-frame-pointer>
+    $<${has_undef}:$<${has_gcc}:${ubsan_gcc}>
+                   $<${has_clang}:${ubsan_clang}>>
     #$<${has_thread}:-fsanitize=thread>
     #$<${has_memory}:-fsanitize=memory;-fno-omit-frame-pointer>
-    #$<${has_undef}:-fsanitize=undefined,float-divide-by-zero,unsigned-integer-overflow,implicit-conversion,local-bounds,nullability>
-    #$<${has_leak}:-fsanitize=leak>
-    #$<${has_cfi}:-fsanitize=cfi>
     #$<${has_safe_stack}:-fsanitize=safe-stack>
   )
   
   # Apply sanitizer link options (must match compile options)
   target_link_options(${target} ${scope}
     $<${has_address}:-fsanitize=address>
+    $<${has_undef}:$<${has_gcc}:${ubsan_gcc}>
+                   $<${has_clang}:${ubsan_clang}>>
     #$<${has_thread}:-fsanitize=thread>
     #$<${has_memory}:-fsanitize=memory>
-    #$<${has_undef}:-fsanitize=undefined,float-divide-by-zero,unsigned-integer-overflow,implicit-conversion,local-bounds,nullability>
-    #$<${has_leak}:-fsanitize=leak>
-    #$<${has_cfi}:-fsanitize=cfi>
     #$<${has_safe_stack}:-fsanitize=safe-stack>
   )
 endfunction(setSanitizerFlags)

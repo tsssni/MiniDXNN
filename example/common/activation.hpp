@@ -1,7 +1,7 @@
 /*!
   \file activation.hpp
   \author Sho Ikeda
-  \brief No brief description
+  \brief Activation function definitions and implementations for MLP layers
   \copyright Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
   SPDX-License-Identifier: MIT
@@ -18,7 +18,7 @@
 #include <type_traits>
 // Half
 #include "half.hpp"
-// Test
+// Example
 #include "utility.hpp"
 
 namespace ex {
@@ -39,6 +39,7 @@ class ActivationFunction
   using Type = T;
   using ConstT = std::add_const_t<Type>;
 
+  virtual ~ActivationFunction() = default;
 
   virtual auto forward(std::span<Type> output, const std::span<ConstT> input) noexcept -> void = 0;
 
@@ -50,8 +51,8 @@ class IdentityActivation : public ActivationFunction<T>
 {
  public:
   using BaseT = ActivationFunction<T>;
-  using Type = BaseT::Type;
-  using ConstT = BaseT::ConstT;
+  using Type = typename BaseT::Type;
+  using ConstT = typename BaseT::ConstT;
 
 
   auto forward(std::span<Type> output, const std::span<ConstT> input) noexcept -> void override;
@@ -64,8 +65,36 @@ class SigmoidActivation : public ActivationFunction<T>
 {
  public:
   using BaseT = ActivationFunction<T>;
-  using Type = BaseT::Type;
-  using ConstT = BaseT::ConstT;
+  using Type = typename BaseT::Type;
+  using ConstT = typename BaseT::ConstT;
+
+
+  auto forward(std::span<Type> output, const std::span<ConstT> input) noexcept -> void override;
+
+  auto backward(std::span<Type> output, const std::span<ConstT> input) noexcept -> void override;
+};
+
+template <Arithmetic T>
+class TanhActivation : public ActivationFunction<T>
+{
+ public:
+  using BaseT = ActivationFunction<T>;
+  using Type = typename BaseT::Type;
+  using ConstT = typename BaseT::ConstT;
+
+
+  auto forward(std::span<Type> output, const std::span<ConstT> input) noexcept -> void override;
+
+  auto backward(std::span<Type> output, const std::span<ConstT> input) noexcept -> void override;
+};
+
+template <Arithmetic T>
+class ReluActivation : public ActivationFunction<T>
+{
+ public:
+  using BaseT = ActivationFunction<T>;
+  using Type = typename BaseT::Type;
+  using ConstT = typename BaseT::ConstT;
 
 
   auto forward(std::span<Type> output, const std::span<ConstT> input) noexcept -> void override;
@@ -78,8 +107,8 @@ class LeakyReluActivation : public ActivationFunction<T>
 {
  public:
   using BaseT = ActivationFunction<T>;
-  using Type = BaseT::Type;
-  using ConstT = BaseT::ConstT;
+  using Type = typename BaseT::Type;
+  using ConstT = typename BaseT::ConstT;
 
 
   auto forward(std::span<Type> output, const std::span<ConstT> input) noexcept -> void override;
@@ -93,13 +122,16 @@ class LeakyReluActivation : public ActivationFunction<T>
 [[nodiscard]]
 auto getActivationTypeString(const ActivationType type) noexcept -> std::string_view;
 
+[[nodiscard]]
+auto getActivationTypeFromString(const std::string_view name) noexcept -> ActivationType;
+
 // Implementation
 
 template <Arithmetic T>
 inline
 auto IdentityActivation<T>::forward(std::span<Type> output, const std::span<ConstT> input) noexcept -> void
 {
-  std::copy(input.begin(), input.end(), output.begin());
+  std::ranges::copy(input, output.begin());
 }
 
 template <Arithmetic T>
@@ -114,7 +146,7 @@ template <Arithmetic T>
 inline
 auto SigmoidActivation<T>::forward(std::span<Type> output, const std::span<ConstT> input) noexcept -> void
 {
-  std::transform(input.begin(), input.end(), output.begin(), [](const T x) -> T
+  std::ranges::transform(input, output.begin(), [](const T x) -> T
   {
     using half_float::abs;
     using half_float::exp;
@@ -133,7 +165,7 @@ template <Arithmetic T>
 inline
 auto SigmoidActivation<T>::backward(std::span<Type> output, const std::span<ConstT> input) noexcept -> void
 {
-  std::transform(input.begin(), input.end(), output.begin(), [](const T x) -> T
+  std::ranges::transform(input, output.begin(), [](const T x) -> T
   {
     using half_float::abs;
     using half_float::exp;
@@ -142,8 +174,58 @@ auto SigmoidActivation<T>::backward(std::span<Type> output, const std::span<Cons
     const auto one = static_cast<T>(1);
     const T e = exp(-abs(x));
     const T oneOverEPlusOne = one / (e + one);
-    const T error = (one - oneOverEPlusOne) * oneOverEPlusOne;
-    return error;
+    const T derivative = (one - oneOverEPlusOne) * oneOverEPlusOne;
+    return derivative;
+  });
+}
+
+template <Arithmetic T>
+inline
+auto TanhActivation<T>::forward(std::span<Type> output, const std::span<ConstT> input) noexcept -> void
+{
+  std::ranges::transform(input, output.begin(), [](const T x) -> T
+  {
+    using half_float::tanh;
+    using std::tanh;
+    return tanh(x);
+  });
+}
+
+template <Arithmetic T>
+inline
+auto TanhActivation<T>::backward(std::span<Type> output, const std::span<ConstT> input) noexcept -> void
+{
+  std::ranges::transform(input, output.begin(), [](const T x) -> T
+  {
+    using half_float::tanh;
+    using std::tanh;
+    const auto one = static_cast<T>(1);
+    const T t = tanh(x);
+    return one - t * t;
+  });
+}
+
+template <Arithmetic T>
+inline
+auto ReluActivation<T>::forward(std::span<Type> output, const std::span<ConstT> input) noexcept -> void
+{
+  std::ranges::transform(input, output.begin(), [](const T x) -> T
+  {
+    using half_float::fmax;
+    using std::fmax;
+    return fmax(static_cast<T>(0), x);
+  });
+}
+
+template <Arithmetic T>
+inline
+auto ReluActivation<T>::backward(std::span<Type> output, const std::span<ConstT> input) noexcept -> void
+{
+  std::ranges::transform(input, output.begin(), [](const T x) -> T
+  {
+    const auto zero = static_cast<T>(0);
+    const auto one = static_cast<T>(1);
+    return (x > zero) ? one : zero;
   });
 }
 
@@ -151,7 +233,7 @@ template <Arithmetic T>
 inline
 auto LeakyReluActivation<T>::forward(std::span<Type> output, const std::span<ConstT> input) noexcept -> void
 {
-  std::transform(input.begin(), input.end(), output.begin(), [this](const T x) -> T
+  std::ranges::transform(input, output.begin(), [this](const T x) -> T
   {
     using half_float::fmax;
     using std::fmax;
@@ -164,12 +246,12 @@ template <Arithmetic T>
 inline
 auto LeakyReluActivation<T>::backward(std::span<Type> output, const std::span<ConstT> input) noexcept -> void
 {
-  std::transform(input.begin(), input.end(), output.begin(), [this](const T x) -> T
+  std::ranges::transform(input, output.begin(), [this](const T x) -> T
   {
     const auto zero = static_cast<T>(0);
     const auto one = static_cast<T>(1);
-    const T error = (x < zero) ? NEGATIVE_SLOPE : one;
-    return error;
+    const T derivative = (x < zero) ? NEGATIVE_SLOPE : one;
+    return derivative;
   });
 }
 
@@ -186,6 +268,14 @@ auto createActivationFunction(const ActivationType type) noexcept -> std::unique
       function = std::make_unique<SigmoidActivation<T>>();
       break;
     }
+    case ActivationType::TANH: {
+      function = std::make_unique<TanhActivation<T>>();
+      break;
+    }
+    case ActivationType::RELU: {
+      function = std::make_unique<ReluActivation<T>>();
+      break;
+    }
     case ActivationType::LEAKY_RELU: {
       function = std::make_unique<LeakyReluActivation<T>>();
       break;
@@ -200,32 +290,26 @@ inline
 auto getActivationTypeString(const ActivationType type) noexcept -> std::string_view
 {
   using namespace std::string_view_literals;
-  std::string_view result;
-  switch (type) {
-    case ActivationType::IDENTITY: {
-      result = "IdentityActivation"sv;
-      break;
-    }
-    case ActivationType::SIGMOID: {
-      result = "SigmoidActivation"sv;
-      break;
-    }
-    case ActivationType::TANH: {
-      result = "TanhActivation"sv;
-      break;
-    }
-    case ActivationType::RELU: {
-      result = "ReluActivation"sv;
-      break;
-    }
-    case ActivationType::LEAKY_RELU: {
-      result = "LeakyReluActivation"sv;
-      break;
-    }
-    default:
-      break;
-  }
+  const std::string_view result = (type == ActivationType::IDENTITY)   ? "IdentityActivation"sv :
+                                  (type == ActivationType::SIGMOID)    ? "SigmoidActivation"sv :
+                                  (type == ActivationType::TANH)       ? "TanhActivation"sv :
+                                  (type == ActivationType::RELU)       ? "ReluActivation"sv :
+                                  (type == ActivationType::LEAKY_RELU) ? "LeakyReluActivation"sv
+                                                                       : ""sv;
   return result;
+}
+
+inline
+auto getActivationTypeFromString(const std::string_view name) noexcept -> ActivationType
+{
+  using namespace std::string_view_literals;
+  const ActivationType type = (name == "identity"sv)   ? ActivationType::IDENTITY :
+                              (name == "sigmoid"sv)    ? ActivationType::SIGMOID :
+                              (name == "tanh"sv)       ? ActivationType::TANH :
+                              (name == "relu"sv)       ? ActivationType::RELU :
+                              (name == "leaky_relu"sv) ? ActivationType::LEAKY_RELU
+                                                       : ActivationType::LEAKY_RELU;
+  return type;
 }
 
 } /* namespace ex */

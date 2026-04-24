@@ -1,7 +1,7 @@
 /*!
   \file image.hpp
   \author Sho Ikeda
-  \brief No brief description
+  \brief Image file I/O declarations (PPM format)
   \copyright Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
   SPDX-License-Identifier: MIT
@@ -16,13 +16,11 @@
 namespace ex {
 
 // Forward declaration
-template <typename> class Pixmap;
+template <typename, size_t> class Pixmap;
 
 
-template <typename T>
-auto writeAsPpm(const Pixmap<T>& pixmap, std::ostream& output) noexcept -> void;
-
-// Impl
+template <typename T, size_t Channel>
+auto writeAsPpm(const Pixmap<T, Channel>& pixmap, std::ostream& output) noexcept -> void;
 
 } /* namespace ex */
 

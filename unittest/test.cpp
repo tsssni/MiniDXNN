@@ -1,18 +1,15 @@
 /*!
   \file test.cpp
   \author Sho Ikeda
-  \brief No brief description
+  \brief CoopVecTest fixture implementation for GPU compute shader tests
   \copyright Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
   SPDX-License-Identifier: MIT
 */
 
 #include "test.hpp"
-// Direct3D
-#include "d3d12.h"
-// GFX
-#include "gfx.h"
-//
+
+#ifndef MINIDXNN_CPP_FALLBACK_ONLY
 #include "common/gfx_utility.hpp"
 
 namespace test {
@@ -32,3 +29,4 @@ auto CoopVecTest::finalizeTest() noexcept -> void
 }
 
 } /* namespace test */
+#endif // !MINIDXNN_CPP_FALLBACK_ONLY

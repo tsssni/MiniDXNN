@@ -1,7 +1,7 @@
 /*!
-  \file xoshiro128plus.cpp
+  \file xoshiro128plus.hpp
   \author Sho Ikeda
-  \brief No brief description
+  \brief Xoshiro128+ pseudo-random number generator
   \copyright Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
   SPDX-License-Identifier: MIT

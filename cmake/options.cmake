@@ -32,6 +32,10 @@ function(setProjectOptions)
     "AddressSanitizer: Detect memory errors (buffer overflows, use-after-free, etc.)" 
     OFF)
 
+  option(MINIDXNN_ENABLE_SANITIZER_UNDEF_BEHAVIOR
+    "UndefinedBehaviorSanitizer: Detect undefined behavior (integer overflow, null deref, etc.)"
+    OFF)
+
   # TODO: Support other sanitizers
   #option(MINIDXNN_ENABLE_SANITIZER_THREAD 
   #  "ThreadSanitizer: Detect data races and threading issues" 
@@ -39,20 +43,14 @@ function(setProjectOptions)
   #option(MINIDXNN_ENABLE_SANITIZER_MEMORY 
   #  "MemorySanitizer: Detect reads of uninitialized memory (Clang/LLVM only)" 
   #  OFF)
-  #option(MINIDXNN_ENABLE_SANITIZER_UNDEF_BEHAVIOR 
-  #  "UndefinedBehaviorSanitizer: Detect undefined behavior (integer overflow, null deref, etc.)" 
-  #  OFF)
-  #option(MINIDXNN_ENABLE_SANITIZER_LEAK 
-  #  "LeakSanitizer: Detect memory leaks at program exit" 
-  #  OFF)
-  #option(MINIDXNN_ENABLE_SANITIZER_CFI 
-  #  "Control Flow Integrity: Protect against control flow hijacking (Clang with LTO only)" 
-  #  OFF)
   #option(MINIDXNN_ENABLE_SANITIZER_SAFE_STACK 
   #  "SafeStack: Protect against stack buffer overflows (Clang only)" 
   #  OFF)
 
-  # MiniDxNN options
+  # MiniDXNN options
+  option(MINIDXNN_CPP_FALLBACK_ONLY
+    "Build without DirectX 12 / gfx dependency; use C++ fallback for MLP computation"
+    OFF)
   option(MINIDXNN_BUILD_EXAMPLES 
     "Build example programs demonstrating library usage" 
     ON)
@@ -62,6 +60,5 @@ function(setProjectOptions)
   option(MINIDXNN_TEST_ENABLE_FP32_TESTS
     "Add unit tests for 32-bit floating point into GoogleTest" 
     OFF)
-
 
 endfunction(setProjectOptions)

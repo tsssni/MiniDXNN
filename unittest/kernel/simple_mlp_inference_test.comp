@@ -1,74 +1,50 @@
 /*!
   \file simple_mlp_inference_test.comp
   \author Sho Ikeda
-  \brief Test kernel for MLP inference with FP16
+  \brief Test kernel for MLP forward-pass inference (FP32 and FP16)
   \copyright Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
   SPDX-License-Identifier: MIT
 */
 
 #include "mlp.hlsl"
+#include "mlp_test_common.hlsl"
 
 ByteAddressBuffer InputBuffer;
 RWByteAddressBuffer OutputBuffer;
 ByteAddressBuffer WeightBuffer;
 ByteAddressBuffer BiasBuffer;
+int TEST_WEIGHT_MATRIX_SIZE_FIRST;
+int TEST_WEIGHT_MATRIX_SIZE_HIDDEN;
 
 template <typename Type>
-void testMlpInference(const uint groupId, const uint groupThreadId)
+void testMlpInference(const uint threadId)
 {
   const dx::linalg::DataType elemType = mininn::impl::TypeTraits<Type>::COMPONENT_TYPE;
-  const uint numThreadsX = MINIDXNN_NUM_THREADS_X;
-  const uint numTasks = MINIDXNN_NUM_TASKS;
-  const int inputDim = MINIDXNN_INPUT_DIMENSION;
-  const int outputDim = MINIDXNN_OUTPUT_DIMENSION;
-  const uint numHiddenLayers = MINIDXNN_NUM_HIDDEN_LAYERS;
-  const int hiddenLayerDim = MINIDXNN_HIDDEN_LAYER_DIMENSIONS;
-  const dx::linalg::MatrixLayout weightMatrixLayout = (dx::linalg::MatrixLayout)MINIDXNN_WEIGHT_MATRIX_LAYOUT;
-  const bool isWeightMatrixTransposed = MINIDXNN_IS_WEIGHT_MATRIX_TRANSPOSED != 0;
-  const uint weightAlignment = MINIDXNN_WEIGHT_ALIGNMENT;
-  const uint weightStrideAlignment = MINIDXNN_WEIGHT_STRIDE_ALIGNMENT;
-  const uint biasAlignment = MINIDXNN_BIAS_ALIGNMENT;
-  using InputVecT = vector<Type, inputDim>;
-  using OutputVecT = vector<Type, outputDim>;
+  const dx::linalg::MatrixLayout layout = (dx::linalg::MatrixLayout)MINIDXNN_WEIGHT_MATRIX_LAYOUT;
   using ActivationHiddenT = mininn:: MINIDXNN_ACTIVATION_HIDDEN_TYPE;
   using ActivationLastT = mininn:: MINIDXNN_ACTIVATION_LAST_TYPE;
-  using BufferManipT = mininn::impl::BufferManip<Type>;
-#if MINIDXNN_HAS_BIAS != 0
-  using LayerDataRef = mininn::InferenceLayerDataRef<numHiddenLayers, hiddenLayerDim, elemType, weightMatrixLayout, elemType, elemType, ActivationHiddenT, ActivationLastT, elemType, isWeightMatrixTransposed, weightAlignment, weightStrideAlignment, biasAlignment>;
-#else // MINIDXNN_HAS_BIAS
-  using LayerDataRef = mininn::InferenceLayerDataRefNoBias<numHiddenLayers, hiddenLayerDim, elemType, weightMatrixLayout, elemType, ActivationHiddenT, ActivationLastT, elemType, isWeightMatrixTransposed, weightAlignment, weightStrideAlignment, biasAlignment>;
-#endif // MINIDXNN_HAS_BIAS
 
-  const uint threadId = groupId * numThreadsX + groupThreadId;
-  if (numTasks <= threadId)
-    return;
-
-  const InputVecT input = BufferManipT::template loadVec<inputDim>(InputBuffer, threadId * sizeof(InputVecT));
-
-  // Create layer parameters
-  LayerDataRef layerData;
-  layerData.setWeightData(WeightBuffer);
-  if (LayerDataRef::HAS_BIAS) {
-    layerData.setBiasData(BiasBuffer);
-  }
-
-  // Inference
-  OutputVecT output = (OutputVecT)0;
-  mininn::forward(output, input, layerData);
-
-  // Store the results
-  BufferManipT::template storeVec<outputDim>(OutputBuffer, threadId * sizeof(OutputVecT), output);
+  testkernel::inferenceStep<Type, MINIDXNN_NUM_LAYERS, MINIDXNN_HIDDEN_LAYER_DIMENSIONS,
+      MINIDXNN_INPUT_DIMENSION, MINIDXNN_OUTPUT_DIMENSION,
+      elemType, layout, ActivationHiddenT, ActivationLastT,
+      MINIDXNN_WEIGHT_MATRIX_ALIGNMENT, MINIDXNN_WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT, MINIDXNN_BIAS_VECTOR_ALIGNMENT,
+      (MINIDXNN_HAS_BIAS != 0)>(
+      threadId, InputBuffer, OutputBuffer, WeightBuffer, BiasBuffer,
+      uint2((uint)TEST_WEIGHT_MATRIX_SIZE_FIRST, (uint)TEST_WEIGHT_MATRIX_SIZE_HIDDEN),
+      MINIDXNN_NUM_TASKS);
 }
 
 [numthreads(MINIDXNN_NUM_THREADS_X, 1, 1)]
 void testMlpInferenceF32Kernel(const uint3 groupThreadId : SV_GroupThreadID, const uint3 groupId : SV_GroupID)
 {
-  testMlpInference<float32_t>(groupId.x, groupThreadId.x);
+  const uint threadId = groupId.x * MINIDXNN_NUM_THREADS_X + groupThreadId.x;
+  testMlpInference<float32_t>(threadId);
 }
 
 [numthreads(MINIDXNN_NUM_THREADS_X, 1, 1)]
 void testMlpInferenceF16Kernel(const uint3 groupThreadId : SV_GroupThreadID, const uint3 groupId : SV_GroupID)
 {
-  testMlpInference<float16_t>(groupId.x, groupThreadId.x);
+  const uint threadId = groupId.x * MINIDXNN_NUM_THREADS_X + groupThreadId.x;
+  testMlpInference<float16_t>(threadId);
 }

@@ -15,13 +15,13 @@ include(${CMAKE_CURRENT_LIST_DIR}/cmake/project.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/cmake/utility.cmake)
 
 set(project_desc "A minimal DirectX-based neural network library")
-project(MiniDxNN DESCRIPTION ${project_desc} VERSION 0.1.0 LANGUAGES CXX)
+project(MiniDXNN DESCRIPTION ${project_desc} VERSION 0.2.0 LANGUAGES CXX)
 
   # Configure project options (build flags, sanitizers, etc.)
   setProjectOptions()
 
   # Top-level project configuration
-  # Only applied when MiniDxNN is the main project (not when included as a subproject)
+  # Only applied when MiniDXNN is the main project (not when included as a subproject)
   if(PROJECT_IS_TOP_LEVEL)
     # Configure available build types (multi-config generators like Visual Studio)
     set(CMAKE_CONFIGURATION_TYPES "Debug" "RelWithDebInfo" "Release")
@@ -39,8 +39,8 @@ project(MiniDxNN DESCRIPTION ${project_desc} VERSION 0.1.0 LANGUAGES CXX)
   # Build third-party dependencies
   add_subdirectory("${PROJECT_SOURCE_DIR}/third_party" "${PROJECT_BINARY_DIR}/third_party")
 
-  # Configure MiniDxNN core library
-  setMiniDxNNCore(minidxnn-core)
+  # Configure MiniDXNN core library
+  setMiniDXNNCore(minidxnn-core)
   checkTarget(minidxnn-core)
 
   # Configure and build examples

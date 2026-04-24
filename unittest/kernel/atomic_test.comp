@@ -1,0 +1,40 @@
+/*!
+  \file atomic_test.comp
+  \author Sho Ikeda
+  \brief Test kernel for floating-point atomic fetch-add operations
+  \copyright Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
+
+  SPDX-License-Identifier: MIT
+*/
+
+#include "mlp.hlsl"
+
+RWByteAddressBuffer OutputBuffer;
+
+
+template <typename Type>
+void testAtomicFetchAdd(const uint threadId)
+{
+  const uint numTasks = MINIDXNN_NUM_TASKS;
+  if (numTasks <= threadId)
+    return;
+
+  mininn::impl::atomicFetchAdd(OutputBuffer, 0 * sizeof(Type), (Type)1);
+  mininn::impl::atomicFetchAdd(OutputBuffer, 1 * sizeof(Type), (Type)2);
+  mininn::impl::atomicFetchAdd(OutputBuffer, 2 * sizeof(Type), (Type)4);
+  mininn::impl::atomicFetchAdd(OutputBuffer, 3 * sizeof(Type), (Type)8);
+}
+
+[numthreads(MINIDXNN_NUM_THREADS_X, 1, 1)]
+void testAtomicFetchAddF32Kernel(const uint3 groupThreadId : SV_GroupThreadID, const uint3 groupId : SV_GroupID)
+{
+  const uint threadId = groupId.x * MINIDXNN_NUM_THREADS_X + groupThreadId.x;
+  testAtomicFetchAdd<float32_t>(threadId);
+}
+
+[numthreads(MINIDXNN_NUM_THREADS_X, 1, 1)]
+void testAtomicFetchAddF16Kernel(const uint3 groupThreadId : SV_GroupThreadID, const uint3 groupId : SV_GroupID)
+{
+  const uint threadId = groupId.x * MINIDXNN_NUM_THREADS_X + groupThreadId.x;
+  testAtomicFetchAdd<float16_t>(threadId);
+}

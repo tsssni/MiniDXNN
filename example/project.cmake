@@ -17,14 +17,24 @@ function(setExampleCommon target)
   set(source_files ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/common/matrix.hpp
                    ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/common/activation.hpp
                    ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/common/mlp_layer.hpp
+                   ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/common/cpp_fallback.hpp
+                   ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/common/loss.hpp
+                   ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/common/loss.cpp
+                   ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/common/optimizer.hpp
+                   ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/common/optimizer.cpp
                    ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/common/image.hpp
                    ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/common/image.cpp
                    ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/common/pixmap.hpp
+                   ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/common/texture.hpp
                    ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/common/utility.hpp
-                   ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/common/gfx_utility.hpp
-                   ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/common/gfx_utility.cpp
                    ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/common/xoshiro128plus.hpp
                    )
+  if(NOT MINIDXNN_CPP_FALLBACK_ONLY)
+    list(APPEND source_files
+                   ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/common/gfx_utility.hpp
+                   ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/common/gfx_utility.cpp
+                   )
+  endif()
   source_group(TREE "${CMAKE_CURRENT_FUNCTION_LIST_DIR}" PREFIX ${target} FILES ${source_files})
   target_sources(${target} INTERFACE ${source_files})
   # Add properties
@@ -39,15 +49,15 @@ endfunction(setExampleCommon)
 function(createHlslIncludeDirsHpp compute_shader_dir binary_dir output_dir)
   # Compute shader path
   cmake_path(SET mininn_compute_shader_dir NORMALIZE "${compute_shader_dir}")
-  cmake_path(RELATIVE_PATH mininn_compute_shader_dir BASE_DIRECTORY ${binary_dir})
+  cmake_path(CONVERT "${mininn_compute_shader_dir}" TO_CMAKE_PATH_LIST mininn_compute_shader_dir)
 
   # DXC header path
   cmake_path(SET mininn_dxc_include_dir NORMALIZE "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../third_party/gfx_dep/gfx/third_party/directx-dxc/inc/hlsl")
-  cmake_path(RELATIVE_PATH mininn_dxc_include_dir BASE_DIRECTORY ${binary_dir})
+  cmake_path(CONVERT "${mininn_dxc_include_dir}" TO_CMAKE_PATH_LIST mininn_dxc_include_dir)
 
   # MLP header path
-  cmake_path(SET mininn_mlp_include_dir NORMALIZE "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../include/hlsl")
-  cmake_path(RELATIVE_PATH mininn_mlp_include_dir BASE_DIRECTORY ${binary_dir})
+  cmake_path(SET mininn_mlp_include_dir NORMALIZE "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../include/minidxnn/hlsl")
+  cmake_path(CONVERT "${mininn_mlp_include_dir}" TO_CMAKE_PATH_LIST mininn_mlp_include_dir)
 
   #
   configure_file("${CMAKE_CURRENT_FUNCTION_LIST_DIR}/hlsl_include_dirs.hpp.in"
@@ -67,7 +77,8 @@ function(buildExample target example_dir hlsl_include_hpp_dir)
 
   # Copy runtime DLLs to the binary directory (Windows only)
   # This ensures DirectX 12 runtime DLLs are available alongside the executable
-  if(WIN32)
+  # Skip when building in C++ fallback mode (no GFX DLLs to copy)
+  if(WIN32 AND NOT MINIDXNN_CPP_FALLBACK_ONLY)
     add_custom_command(TARGET ${target} POST_BUILD
       COMMAND ${CMAKE_COMMAND} -E copy_if_newer $<TARGET_RUNTIME_DLLS:${target}> $<TARGET_FILE_DIR:${target}>
       COMMAND_EXPAND_LISTS

@@ -1,7 +1,7 @@
 /*!
   \file matrix.hpp
   \author Sho Ikeda
-  \brief No brief description
+  \brief Matrix and vector linear algebra utilities for CPU-side computation
   \copyright Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
   SPDX-License-Identifier: MIT
@@ -14,17 +14,18 @@
 #include <bit>
 #include <cassert>
 #include <cstddef>
+#include <memory>
 #include <ranges>
 #include <span>
 #include <type_traits>
 #include <utility>
 #include <vector>
-//
+// Example
 #include "utility.hpp"
 
 namespace ex {
 
-//
+//! Row-major matrix reference with optional stride (non-owning view)
 template <Arithmetic ArithT>
 class MatrixRef
 {
@@ -56,6 +57,7 @@ class MatrixRef
       m_stride{other.m_stride},
       m_data{other.m_data} {}
 
+  virtual ~MatrixRef() = default;
 
   [[nodiscard]]
   auto operator()(const size_t row, const size_t column) noexcept -> ReferenceT {return get(row, column);}
@@ -103,26 +105,26 @@ class MatrixRef
   std::span<ArithT> m_data;
 };
 
-//
+//! Transposed view of a MatrixRef (swaps row/column access)
 template <Arithmetic ArithT>
 class TransposedMatrixRef : public MatrixRef<ArithT>
 {
  public:
   using BaseT = MatrixRef<ArithT>;
-  using Type = BaseT::Type;
-  using ConstT = BaseT::ConstT; 
-  using ReferenceT = BaseT::ReferenceT;
-  using ConstReferenceT = BaseT::ConstReferenceT;
+  using Type = typename BaseT::Type;
+  using ConstT = typename BaseT::ConstT; 
+  using ReferenceT = typename BaseT::ReferenceT;
+  using ConstReferenceT = typename BaseT::ConstReferenceT;
 
 
   TransposedMatrixRef(const size_t originalRowSize,
                       const size_t originalColumnSize,
-                      std::span<Type> data) noexcept : BaseT(originalRowSize, originalColumnSize, data) {}
+                      std::span<Type> originalData) noexcept : BaseT(originalRowSize, originalColumnSize, originalData) {}
 
   TransposedMatrixRef(const size_t originalRowSize,
                       const size_t originalColumnSize,
                       const size_t originalStride,
-                      std::span<Type> data) noexcept : BaseT(originalRowSize, originalColumnSize, originalStride, data) {}
+                      std::span<Type> originalData) noexcept : BaseT(originalRowSize, originalColumnSize, originalStride, originalData) {}
 
   TransposedMatrixRef(TransposedMatrixRef&& other) noexcept : BaseT(std::move(other)) {}
 
@@ -139,6 +141,20 @@ class TransposedMatrixRef : public MatrixRef<ArithT>
   [[nodiscard]]
   virtual auto rowSize() const noexcept -> size_t override {return BaseT::columnSize();}
 };
+
+template <Arithmetic ArithT>
+auto makeMatrix(const size_t rowSize, const size_t columnSize, std::span<ArithT> data) noexcept
+    -> std::unique_ptr<MatrixRef<ArithT>>
+{
+  return std::make_unique<MatrixRef<ArithT>>(rowSize, columnSize, data);
+}
+
+template <Arithmetic ArithT>
+auto makeTransposedMatrix(const size_t originalRowSize, const size_t originalColumnSize, std::span<ArithT> data) noexcept
+    -> std::unique_ptr<MatrixRef<ArithT>>
+{
+  return std::make_unique<TransposedMatrixRef<ArithT>>(originalRowSize, originalColumnSize, data);
+}
 
 // A matrix and a vector multiplication
 template <Arithmetic OutputT, Arithmetic MatrixElemT, Arithmetic VecElemT> inline
@@ -170,7 +186,7 @@ auto add(const std::span<const LhsElemT> lhs, const std::span<const RhsElemT> rh
   return result;
 }
 
-//
+//! Fused matrix-vector multiply and add: result = A * b + c
 template <Arithmetic OutputT, Arithmetic MatrixElemT, Arithmetic Vec1ElemT, Arithmetic Vec2ElemT> inline
 auto mulAdd(const MatrixRef<MatrixElemT>& a, const std::span<const Vec1ElemT> b, const std::span<const Vec2ElemT> c) noexcept -> std::vector<OutputT>
 {

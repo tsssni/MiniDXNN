@@ -1,7 +1,7 @@
 /*!
   \file pixmap.hpp
   \author Sho Ikeda
-  \brief No brief description
+  \brief Pixmap (2D image buffer) template class
   \copyright Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
   SPDX-License-Identifier: MIT
@@ -11,6 +11,7 @@
 #define MINIDXNN_EXAMPLE_PIXMAP_HPP 1
 
 // Standard C++ library
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <ostream>
@@ -20,8 +21,8 @@
 
 namespace ex {
 
-//
-template <typename T>
+//! 2D pixel buffer template class
+template <typename T, size_t CHANNEL = 1>
 class Pixmap
 {
  public:
@@ -29,38 +30,63 @@ class Pixmap
   using ConstT = std::add_const_t<Type>;
   using Reference = std::add_lvalue_reference_t<Type>;
   using ConstReference = std::add_lvalue_reference_t<ConstT>;
+  using ValueT = std::array<Type, CHANNEL>;
+
+  static constexpr size_t NUM_CHANNELS = CHANNEL;
 
 
-  Pixmap(const size_t width, const size_t height, const size_t channel) noexcept
+  Pixmap(const size_t width, const size_t height) noexcept
       : m_width{static_cast<std::uint32_t>(width)},
-        m_height{static_cast<std::uint32_t>(height)},
-        m_channel{static_cast<std::uint32_t>(channel)}
+        m_height{static_cast<std::uint32_t>(height)}
   {
     init();
   }
 
 
-  auto channel() const noexcept -> size_t {return m_channel;}
+  [[nodiscard]]
+  static constexpr auto channel() noexcept -> size_t {return NUM_CHANNELS;}
 
-  auto data() noexcept -> std::span<Type> {return m_data;}
+  [[nodiscard]]
+  auto data() noexcept -> std::span<ValueT> {return m_data;}
 
-  auto data() const noexcept -> std::span<ConstT> {return m_data;}
+  [[nodiscard]]
+  auto data() const noexcept -> std::span<const ValueT> {return m_data;}
 
+  [[nodiscard]]
   auto height() const noexcept -> size_t {return m_height;}
 
+  [[nodiscard]]
   auto width() const noexcept -> size_t {return m_width;}
+
+  auto set(const size_t row, const size_t col, const ValueT& values) noexcept -> void
+  {
+    m_data[row * m_width + col] = values;
+  }
+
+  [[nodiscard]]
+  auto get(const size_t row, const size_t col) const noexcept -> ValueT
+  {
+    return m_data[row * m_width + col];
+  }
+
+  [[nodiscard]]
+  auto sample(const float u, const float v) const noexcept -> ValueT
+  {
+    const auto px = static_cast<size_t>(u * static_cast<float>(m_width - 1));
+    const auto py = static_cast<size_t>(v * static_cast<float>(m_height - 1));
+    return get(py, px);
+  }
 
  private:
   auto init() noexcept -> void
   {
-    m_data.resize(channel() * width() * height());
+    m_data.resize(width() * height());
   }
 
 
-  std::vector<Type> m_data;
+  std::vector<ValueT> m_data;
   std::uint32_t m_width;
   std::uint32_t m_height;
-  std::uint32_t m_channel;
 };
 
 static_assert(sizeof(std::uint8_t) == 1);

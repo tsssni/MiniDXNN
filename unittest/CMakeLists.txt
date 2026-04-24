@@ -14,7 +14,7 @@ include(${CMAKE_CURRENT_LIST_DIR}/../cmake/utility.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/project.cmake)
 
 # Build unit test executable
-set(project_desc "MiniDxNN unit tests")
+set(project_desc "MiniDXNN unit tests")
 project(unittest DESCRIPTION ${project_desc} LANGUAGES CXX)
   buildUnittest(unittest)
   checkTarget(unittest)

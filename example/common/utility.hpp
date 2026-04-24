@@ -1,7 +1,7 @@
 /*!
   \file utility.hpp
   \author Sho Ikeda
-  \brief No brief description
+  \brief Common utility functions, type traits, and alignment helpers
   \copyright Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
   SPDX-License-Identifier: MIT
@@ -29,14 +29,14 @@
 
 namespace ex {
 
-//
+//! Fixed-size string buffer for shader compile definitions
 using OptionString = std::array<char, 256>;
 
-//
+//! Optional reference wrapper
 template <typename Type>
 using OptionalRef = std::optional<std::reference_wrapper<Type>>;
 
-//
+//! Format a string into an OptionString buffer
 template <typename ...Args>
 [[nodiscard]]
 inline
@@ -47,12 +47,12 @@ auto createOptionString(std::format_string<Args...> format, Args&&... args) noex
   return option;
 }
 
-//
+//! Arithmetic type concept supporting built-in numeric types and half_float::half
 template <typename Type>
 concept Arithmetic = std::is_arithmetic_v<Type> or
                      std::is_same_v<half_float::half, std::remove_cv_t<Type>>;
 
-// 
+//! Floating-point type concept supporting built-in floating-point types and half_float::half
 template <typename Type>
 concept FloatingPoint = std::is_floating_point_v<Type> or
                         std::is_same_v<half_float::half, std::remove_cv_t<Type>>;
@@ -106,7 +106,7 @@ auto validateValue(const Type value) noexcept -> void
   const auto zero = static_cast<Type>(0);
   const bool ok = (value == zero) || isnormal(value);
   if (not ok) {
-    std::cerr << "value is not normal: " << static_cast<double>(value) << std::endl;
+    std::cerr << std::format("value is not normal: {}", static_cast<double>(value)) << std::endl;
   }
 }
 

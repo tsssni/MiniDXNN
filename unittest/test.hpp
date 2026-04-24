@@ -1,7 +1,7 @@
 /*!
   \file test.hpp
   \author Sho Ikeda
-  \brief No brief description
+  \brief CoopVecTest fixture and test parameter definitions
   \copyright Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
   SPDX-License-Identifier: MIT
@@ -16,10 +16,12 @@
 #include <memory>
 // GoogleTest
 #include "gtest/gtest.h"
+#ifndef MINIDXNN_CPP_FALLBACK_ONLY
 // GFX
 #include "gfx.h"
 #include "gfx_window.h"
-// Test
+#endif
+// Example
 #include "common/mlp_layer.hpp"
 #include "common/utility.hpp"
 
@@ -39,6 +41,7 @@ struct TestParameters
   ex::MatrixLayout m_weightMatrixLayout = ex::MatrixLayout::ROW_MAJOR;
 };
 
+#ifndef MINIDXNN_CPP_FALLBACK_ONLY
 class CoopVecTest : public ::testing::TestWithParam<TestParameters>
 {
  public:
@@ -66,6 +69,25 @@ class CoopVecTest : public ::testing::TestWithParam<TestParameters>
 
  private:
   std::shared_ptr<GfxContext> m_gfxContext;
+};
+#endif // !MINIDXNN_CPP_FALLBACK_ONLY
+
+// C++ fallback test fixture — no GPU dependency
+class CppFallbackTest : public ::testing::TestWithParam<TestParameters>
+{
+ public:
+  [[nodiscard]]
+  auto params() const noexcept -> const TestParameters& {return GetParam();}
+
+#ifndef MINIDXNN_CPP_FALLBACK_ONLY
+  // Provide a dummy GfxContext for shared test functions that require it.
+  // The fallback path (useCppFallback=true) never touches the GfxContext.
+  [[nodiscard]]
+  auto context() noexcept -> GfxContext& {return m_dummyContext;}
+
+ private:
+  GfxContext m_dummyContext{};
+#endif // !MINIDXNN_CPP_FALLBACK_ONLY
 };
 
 } /* namespace test */
