@@ -14,9 +14,11 @@
 #include <cassert>
 #include <cmath>
 #include <cstddef>
+#include <cstring>
 #include <filesystem>
 #include <functional>
 #include <format>
+#include <iomanip>
 #include <iostream>
 #include <memory>
 #include <limits>
@@ -24,6 +26,7 @@
 #include <random>
 #include <sstream>
 #include <string_view>
+#include <thread>
 #include <vector>
 // GoogleTest
 #include "gtest/gtest.h"
@@ -50,7 +53,7 @@
 static_assert(sizeof(half_float::half) == 2);
 
 #ifndef MINIDXNN_CPP_FALLBACK_ONLY
-using test::CoopVecTest;
+using test::LinearAlgebraMatrixTest;
 #endif
 using test::CppFallbackTest;
 
@@ -107,8 +110,8 @@ template <ex::Arithmetic Type>
 [[nodiscard]]
 auto calcSimilarity(const Type lhs, const Type rhs) noexcept -> double
 {
-  const auto l = static_cast<double>(lhs);
-  const auto r = static_cast<double>(rhs);
+  const double l = static_cast<double>(lhs);
+  const double r = static_cast<double>(rhs);
   const double diff = std::abs(l - r);
   const double norm = std::max((std::abs(l) + std::abs(r)) / 2.0, std::numeric_limits<double>::epsilon());
   const double similarity = 1.0 - std::clamp(diff / norm, 0.0, 1.0);
@@ -139,7 +142,11 @@ auto buildMlpTestDefinitions(const test::TestParameters& testParams,
                              const ex::ActivationType activationHidden,
                              const ex::ActivationType activationLast,
                              const bool hasBias,
-                             const bool useSoftwareLinAlgImpl) -> std::vector<ex::OptionString>
+                             const bool useSoftwareLinAlgImpl,
+                             const ex::MatrixLayout weightMatrixLayout,
+                             const size_t matrixAlignment,
+                             const size_t vectorStrideAlignment,
+                             const size_t biasAlignment) -> std::vector<ex::OptionString>
 {
   return {
       ex::createOptionString("MINIDXNN_HAS_BIAS={}", hasBias ? 1 : 0),
@@ -149,10 +156,10 @@ auto buildMlpTestDefinitions(const test::TestParameters& testParams,
       ex::createOptionString("MINIDXNN_NUM_LAYERS={}", numLayers),
       ex::createOptionString("MINIDXNN_ACTIVATION_HIDDEN_TYPE={}", ex::getActivationTypeString(activationHidden)),
       ex::createOptionString("MINIDXNN_ACTIVATION_LAST_TYPE={}", ex::getActivationTypeString(activationLast)),
-      ex::createOptionString("MINIDXNN_WEIGHT_MATRIX_LAYOUT={}", static_cast<int>(testParams.m_weightMatrixLayout)),
-      ex::createOptionString("MINIDXNN_WEIGHT_MATRIX_ALIGNMENT={}", ex::MATRIX_ALIGNMENT),
-      ex::createOptionString("MINIDXNN_WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT={}", ex::MATRIX_VECTOR_STRIDE_ALIGNMENT),
-      ex::createOptionString("MINIDXNN_BIAS_VECTOR_ALIGNMENT={}", ex::VECTOR_ALIGNMENT),
+      ex::createOptionString("MINIDXNN_WEIGHT_MATRIX_LAYOUT={}", ex::toHlslMatrixLayout(weightMatrixLayout)),
+      ex::createOptionString("MINIDXNN_WEIGHT_MATRIX_ALIGNMENT={}", matrixAlignment),
+      ex::createOptionString("MINIDXNN_WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT={}", vectorStrideAlignment),
+      ex::createOptionString("MINIDXNN_BIAS_VECTOR_ALIGNMENT={}", biasAlignment),
       ex::createOptionString("MINIDXNN_NUM_THREADS_X={}", testParams.m_numThreadsX),
       ex::createOptionString("MINIDXNN_USE_SOFTWARE_LINALG_IMPL={}", useSoftwareLinAlgImpl ? 1 : 0),
   };
@@ -167,8 +174,8 @@ auto assertSimilarity(const char* expectedLabel,
                       const Type value,
                       const double similarityThreshold) -> ::testing::AssertionResult
 {
-  const auto e = static_cast<double>(expected);
-  const auto v = static_cast<double>(value);
+  const double e = static_cast<double>(expected);
+  const double v = static_cast<double>(value);
   const double similarity = calcSimilarity(e, v);
   if (similarity < similarityThreshold) {
     return ::testing::AssertionFailure()
@@ -214,7 +221,7 @@ auto assertSimilarityBatch(const std::span<const Type> expected,
         errorMessage << std::format("  [{}]: expected={:.8f}, value={:.8f}, similarity={:.6f}\n", i, static_cast<double>(expected[i]), static_cast<double>(values[i]), similarities[i]);
       }
     }
-    std::cerr << errorMessage.str() << std::endl;
+    std::cerr << errorMessage.str() << '\n';
   }
 
   if (averageSimilarity < similarityThreshold) {
@@ -236,75 +243,12 @@ auto assertSimilarityBatch(const std::span<const Type> expected,
 
 namespace {
 
-// ----------------------------------------------------------------------------
-// C++ fallback helper functions
-// These implement the kernel-equivalent operations using the mlp.hlsl C++ path.
-// ----------------------------------------------------------------------------
-
-template <ex::Arithmetic Type, int ROW_SIZE, int COLUMN_SIZE, bool IS_TRANSPOSED, bool HAS_BIAS>
-void cppFallbackLinearAlgebraMul(const std::vector<std::uint8_t>& weightBuf,
-                                 const size_t vectorStride,
-                                 const std::vector<std::uint8_t>& biasBuf,
-                                 const std::vector<Type>& inputVec,
-                                 std::vector<Type>& outputVec)
-{
-  constexpr auto DT = ex::DxLinalgDataTypeOf<Type>::value;
-  using Resolver = mininn::TransposeResolver<dx::linalg::MATRIX_LAYOUT_ROW_MAJOR, IS_TRANSPOSED>;
-  using MatrixRefT = dx::linalg::MatrixRefImpl<ByteAddressBuffer, DT, ROW_SIZE, COLUMN_SIZE, Resolver::EFFECTIVE_LAYOUT, Resolver::EFFECTIVE_TRANSPOSED>;
-
-  ByteAddressBuffer wBuf{weightBuf};
-  MatrixRefT matrix = {wBuf, 0, static_cast<uint>(vectorStride)};
-
-  ::vector<Type, COLUMN_SIZE> input{};
-  for (size_t d = 0; d < static_cast<size_t>(COLUMN_SIZE); ++d)
-    input[d] = inputVec[d];
-
-  auto interpreted = dx::linalg::MakeInterpretedVector<DT>(input);
-
-  ::vector<Type, ROW_SIZE> result{};
-
-  if constexpr (HAS_BIAS) {
-    ByteAddressBuffer bBuf{biasBuf};
-    dx::linalg::VectorRefImpl<ByteAddressBuffer, DT> biasRef = {bBuf, 0};
-    result = mininn::impl::LinearAlgebra::mulAdd<Type>(matrix, interpreted, biasRef);
-  } else {
-    result = mininn::impl::LinearAlgebra::mul<Type>(matrix, interpreted);
-  }
-
-  outputVec.resize(ROW_SIZE);
-  for (size_t d = 0; d < static_cast<size_t>(ROW_SIZE); ++d)
-    outputVec[d] = result[d];
-}
-
-template <ex::Arithmetic Type, int SIZE>
-void cppFallbackVectorAcc(RWByteAddressBuffer& outputBuf, const size_t numTasks)
-{
-  constexpr auto DT = mininn::impl::TypeTraits<Type>::COMPONENT_TYPE;
-
-  for (size_t task = 0; task < numTasks; ++task) {
-    ::vector<Type, SIZE> input{};
-    for (size_t i = 0; i < static_cast<size_t>(SIZE); ++i)
-      input[i] = static_cast<Type>(static_cast<float>(1u << static_cast<unsigned>(i)));
-
-    dx::linalg::RWVectorRef<DT> output = {outputBuf, 0};
-    mininn::impl::LinearAlgebra::vectorAcc(input, output);
-  }
-}
-
-template <ex::Arithmetic Type>
-void cppFallbackAtomicFetchAdd(RWByteAddressBuffer& outputBuf, const size_t numTasks)
-{
-  for (size_t task = 0; task < numTasks; ++task) {
-    mininn::impl::atomicFetchAdd(outputBuf, 0 * sizeof(Type), static_cast<Type>(1));
-    mininn::impl::atomicFetchAdd(outputBuf, 1 * sizeof(Type), static_cast<Type>(2));
-    mininn::impl::atomicFetchAdd(outputBuf, 2 * sizeof(Type), static_cast<Type>(4));
-    mininn::impl::atomicFetchAdd(outputBuf, 3 * sizeof(Type), static_cast<Type>(8));
-  }
-}
+// C++ fallback helper functions, kernel dispatch, and smoke test
+#include "cpp_fallback_path.hpp"
 
 // ----------------------------------------------------------------------------
 // Unified linear algebra, vector accumulation, and atomic test functions
-// Shared between CoopVecTest (GPU) and CppFallbackTest (C++ fallback).
+// Shared between LinearAlgebraMatrixTest (GPU) and CppFallbackTest (C++ fallback).
 // GPU-specific code is guarded by #ifndef MINIDXNN_CPP_FALLBACK_ONLY.
 // ----------------------------------------------------------------------------
 
@@ -315,8 +259,12 @@ auto testLinearAlgebraMul(const test::TestParameters& testParams,
                           const bool useSoftwareLinAlgImpl,
                           const bool useCppFallback,
 #endif
+                          ex::MatrixLayout weightMatrixLayout,
                           const size_t numOfTests = 5) -> void
 {
+#ifdef MINIDXNN_CPP_FALLBACK_ONLY
+  (void)weightMatrixLayout;
+#endif
   constexpr size_t rowSize = static_cast<size_t>(ROW_SIZE);
   constexpr size_t columnSize = static_cast<size_t>(COLUMN_SIZE);
   ex::Xoshiro128Plus rng{testParams.m_seed};
@@ -344,14 +292,31 @@ auto testLinearAlgebraMul(const test::TestParameters& testParams,
       const std::array includeDirList = ex::getHlslIncludeDirList();
       std::shared_ptr program = ex::createGfxProgram(gfxContext, "linear_algebra_test", shaderDir, includeDirList);
 
-      std::array<size_t, 1> matrixSizeList;
       std::shared_ptr inputBuffer = ex::createGfxBuffer<Type>(gfxContext, inputVec);
       const size_t outputSize = testParams.m_numThreadsX * rowSize;
       std::shared_ptr outputBuffer = ex::createGfxBuffer<Type>(gfxContext, outputSize);
-      std::shared_ptr weightBuffer = IS_TRANSPOSED
-          ? ex::convertToMatrixBuffer<Type>(gfxContext, rowSize, columnSize, matrixData, testParams.m_weightMatrixLayout, matrixSizeList, ex::MATRIX_ALIGNMENT, ex::MATRIX_VECTOR_STRIDE_ALIGNMENT)
-          : ex::convertToMatrixBuffer<Type>(gfxContext, columnSize, rowSize, matrixData, testParams.m_weightMatrixLayout, matrixSizeList, ex::MATRIX_ALIGNMENT, ex::MATRIX_VECTOR_STRIDE_ALIGNMENT);
-      std::shared_ptr biasBuffer = ex::convertToVectorBuffer<Type>(gfxContext, bias, ex::VECTOR_ALIGNMENT);
+
+      // Build D3D12MatrixInfo for the single weight matrix
+      ex::D3D12MatrixInfo<Type> weightInfo;
+      weightInfo.m_srcData = matrixData;
+      if constexpr (IS_TRANSPOSED) {
+        // Transposed: physical storage is columnSize × rowSize
+        weightInfo.m_rowSize = columnSize;
+        weightInfo.m_columnSize = rowSize;
+      } else {
+        weightInfo.m_rowSize = rowSize;
+        weightInfo.m_columnSize = columnSize;
+      }
+      weightInfo.m_layout = weightMatrixLayout;
+      std::vector<ex::D3D12MatrixInfo<Type>> matrixInfoList{weightInfo};
+      std::shared_ptr weightBuffer = ex::packAsD3D12MatrixBuffer<Type>(gfxContext, matrixInfoList);
+      ASSERT_TRUE(weightBuffer) << "packAsD3D12MatrixBuffer failed for layout " << static_cast<int>(weightMatrixLayout);
+
+      // Build D3D12VectorInfo for bias
+      ex::D3D12VectorInfo<Type> biasInfo;
+      biasInfo.m_srcData = bias;
+      std::vector<ex::D3D12VectorInfo<Type>> vectorInfoList{biasInfo};
+      std::shared_ptr biasBuffer = ex::packAsD3D12VectorBuffer<Type>(gfxContext, vectorInfoList);
 
       {
         const ex::OptionString kernelName = ex::createOptionString("testLinearAlgebraMulF{}Kernel", 8 * sizeof(Type));
@@ -359,9 +324,9 @@ auto testLinearAlgebraMul(const test::TestParameters& testParams,
             ex::createOptionString("MINIDXNN_HAS_BIAS={}", HAS_BIAS ? 1 : 0),
             ex::createOptionString("MINIDXNN_ROW_SIZE={}", rowSize),
             ex::createOptionString("MINIDXNN_COLUMN_SIZE={}", columnSize),
-            ex::createOptionString("MINIDXNN_WEIGHT_MATRIX_LAYOUT={}", static_cast<int>(testParams.m_weightMatrixLayout)),
+            ex::createOptionString("MINIDXNN_WEIGHT_MATRIX_LAYOUT={}", ex::toHlslMatrixLayout(matrixInfoList[0].m_layout)),
             ex::createOptionString("MINIDXNN_WEIGHT_MATRIX_IS_TRANSPOSED={}", IS_TRANSPOSED ? 1 : 0),
-            ex::createOptionString("MINIDXNN_MATRIX_VECTOR_STRIDE_ALIGNMENT={}", ex::MATRIX_VECTOR_STRIDE_ALIGNMENT),
+            ex::createOptionString("MINIDXNN_MATRIX_VECTOR_STRIDE_ALIGNMENT={}", matrixInfoList[0].m_vectorStrideAlignment),
             ex::createOptionString("MINIDXNN_NUM_THREADS_X={}", testParams.m_numThreadsX),
             ex::createOptionString("MINIDXNN_NUM_TASKS={}", testParams.m_numThreadsX),
             ex::createOptionString("MINIDXNN_USE_SOFTWARE_LINALG_IMPL={}", useSoftwareLinAlgImpl ? 1 : 0),
@@ -476,7 +441,7 @@ auto testVectorAcc(const test::TestParameters& testParams,
     };
 
     for (size_t i = 0; i < size; ++i) {
-      const auto expected = static_cast<Type>(static_cast<float>(numTasks << i));
+      const Type expected = static_cast<Type>(static_cast<float>(numTasks << i));
       EXPECT_PRED_FORMAT2(assertTest, expected, result[i]);
     }
   }
@@ -490,8 +455,15 @@ auto testAtomicFetchAdd(const test::TestParameters& testParams,
 #endif
                         const size_t numOfTests = 5) -> void
 {
-  constexpr size_t size = 4;
-  constexpr size_t numTasks = 1ull << (std::min)(std::numeric_limits<Type>::digits, 17);
+  constexpr size_t size = 8;
+  // For F16, cap thread count so the total sum stays within half precision range
+  // (half can only accumulate small integers exactly up to 2^11 = 2048).
+  // For F32, use high thread count (2^17) for maximum CAS contention.
+  constexpr size_t numTasks = sizeof(Type) >= 4
+      ? (1ull << (std::min)(std::numeric_limits<Type>::digits, 17))
+      : 512;
+  // High iteration count to maximize CAS contention and expose optimization bugs
+  constexpr size_t numIterations = sizeof(Type) >= 4 ? 32 : 1;
 
   for (size_t trial = 0; trial < numOfTests; ++trial) {
     std::array<Type, size> result{};
@@ -510,6 +482,7 @@ auto testAtomicFetchAdd(const test::TestParameters& testParams,
         const std::array kernelDefinitions = std::to_array<ex::OptionString>({
             ex::createOptionString("MINIDXNN_NUM_THREADS_X={}", testParams.m_numThreadsX),
             ex::createOptionString("MINIDXNN_NUM_TASKS={}", numTasks),
+            ex::createOptionString("MINIDXNN_NUM_ITERATIONS={}", numIterations),
         });
 
         std::shared_ptr kernel = ex::createGfxComputeKernel(gfxContext, *program, kernelName.data(), kernelDefinitions);
@@ -533,7 +506,7 @@ auto testAtomicFetchAdd(const test::TestParameters& testParams,
       std::vector<std::uint8_t> outputData(size * sizeof(Type), 0);
       RWByteAddressBuffer outputBuf{outputData};
 
-      cppFallbackAtomicFetchAdd<Type>(outputBuf, numTasks);
+      cppFallbackAtomicFetchAdd<Type>(outputBuf, numTasks, numIterations);
 
       for (size_t i = 0; i < size; ++i)
         std::memcpy(&result[i], outputData.data() + i * sizeof(Type), sizeof(Type));
@@ -544,283 +517,115 @@ auto testAtomicFetchAdd(const test::TestParameters& testParams,
       return assertSimilarity(expectedLabel, valueLabel, expected, value, testParams.m_similarityThreshold);
     };
 
-    for (size_t i = 0; i < size; ++i) {
-      const auto expected = static_cast<Type>(static_cast<float>(numTasks << i));
+    const double N = static_cast<double>(numTasks);
+    const double I = static_cast<double>(numIterations);
+    // Slot 0-3: constant accumulation
+    for (size_t i = 0; i < 4; ++i) {
+      const Type expected = static_cast<Type>(static_cast<float>(N * I * static_cast<double>(1u << i)));
       EXPECT_PRED_FORMAT2(assertTest, expected, result[i]);
     }
+    // Slot 4: 0.125 * N * I
+    {
+      const Type expected = static_cast<Type>(static_cast<float>(N * I * 0.125));
+      EXPECT_PRED_FORMAT2(assertTest, expected, result[4]);
+    }
+    // Slot 5: 0.0625 * N * I
+    {
+      const Type expected = static_cast<Type>(static_cast<float>(N * I * 0.0625));
+      EXPECT_PRED_FORMAT2(assertTest, expected, result[5]);
+    }
+    // Slot 6: alternating +1/-1 by thread ID; even threads add +1, odd add -1
+    // Net = numIterations * (numEvenThreads - numOddThreads) where numTasks is even → net = 0
+    {
+      const bool evenTasks = (numTasks & 1u) == 0u;
+      const double net = evenTasks ? 0.0 : I;
+      const Type expected = static_cast<Type>(static_cast<float>(net));
+      // Near-zero expected value: use absolute tolerance
+      EXPECT_NEAR(static_cast<double>(result[6]), static_cast<double>(expected),
+                  std::max(1.0, static_cast<double>(numTasks) * 0.01));
+    }
+    // Slot 7: 3 * N * I
+    {
+      const Type expected = static_cast<Type>(static_cast<float>(N * I * 3.0));
+      EXPECT_PRED_FORMAT2(assertTest, expected, result[7]);
+    }
   }
 }
 
-// ----------------------------------------------------------------------------
-// C++ fallback kernel dispatch (MLP forward/backward)
-// ----------------------------------------------------------------------------
-
-template <ex::Arithmetic Type, uint NUM_LAYERS, int HIDDEN_DIM, int INPUT_DIM, int OUTPUT_DIM,
-          typename ActivationHiddenT, typename ActivationLastT, bool HAS_BIAS>
-void cppFallbackForwardKernel(ex::PackedMlpBuffers<Type>& packed,
-                              const std::vector<Type>& inputs,
-                              std::vector<Type>& outputs,
-                              size_t numTasks)
+template <ex::Arithmetic Type, int ROW_SIZE, int COLUMN_SIZE>
+auto testOuterProductAcc(const test::TestParameters& testParams,
+#ifndef MINIDXNN_CPP_FALLBACK_ONLY
+                         GfxContext& gfxContext,
+                         const bool useSoftwareLinAlgImpl,
+                         const bool useCppFallback,
+#endif
+                         [[maybe_unused]] ex::MatrixLayout weightMatrixLayout,
+                         const size_t numOfTests = 5) -> void
 {
-  constexpr auto DT = ex::DxLinalgDataTypeOf<Type>::value;
+  // For F16, cap tasks to stay within half precision range
+  constexpr size_t numTasks = sizeof(Type) >= 4
+      ? (1ull << (std::min)(std::numeric_limits<Type>::digits, 16))
+      : 512;
 
-  ByteAddressBuffer inputBuf{inputs};
-  RWByteAddressBuffer outputBuf{outputs};
+  for (size_t trial = 0; trial < numOfTests; ++trial) {
+    // Compute expected outer product accumulation:
+    // lhs[i] = i+1, rhs[j] = 1.0 => matrix[i][j] = numTasks * (i+1)
+    constexpr size_t rowSize = static_cast<size_t>(ROW_SIZE);
+    constexpr size_t columnSize = static_cast<size_t>(COLUMN_SIZE);
+    const size_t vectorStride = ex::alignBytes(columnSize * sizeof(Type), ex::MATRIX_VECTOR_STRIDE_ALIGNMENT);
+    const size_t totalBytes = ex::alignBytes(rowSize * vectorStride, ex::MATRIX_ALIGNMENT);
 
-  for (uint task = 0; task < static_cast<uint>(numTasks); ++task) {
-    testkernel::inferenceStep<Type, NUM_LAYERS, HIDDEN_DIM, INPUT_DIM, OUTPUT_DIM,
-        DT, dx::linalg::MATRIX_LAYOUT_ROW_MAJOR, ActivationHiddenT, ActivationLastT,
-        128, 16, 64, HAS_BIAS>(
-        task, inputBuf, outputBuf, packed.weightBAB(), packed.biasBAB(),
-        packed.matrixSizes, static_cast<uint>(numTasks));
-  }
-}
+    std::vector<Type> result(rowSize * columnSize, static_cast<Type>(0));
 
-// Dispatch activation types at runtime
-template <ex::Arithmetic Type, uint NUM_LAYERS, int HIDDEN_DIM, int INPUT_DIM, int OUTPUT_DIM, bool HAS_BIAS>
-bool dispatchForwardActivation(ex::ActivationType hiddenAct,
-                               ex::ActivationType lastAct,
-                               ex::PackedMlpBuffers<Type>& packed,
-                               const std::vector<Type>& inputs,
-                               std::vector<Type>& outputs,
-                               size_t numTasks)
-{
-  #define DISPATCH_ACT(HiddenT, LastT, hiddenE, lastE) \
-    if (hiddenAct == (hiddenE) && lastAct == (lastE)) { \
-      cppFallbackForwardKernel<Type, NUM_LAYERS, HIDDEN_DIM, INPUT_DIM, OUTPUT_DIM, HiddenT, LastT, HAS_BIAS>(packed, inputs, outputs, numTasks); \
-      return true; \
+#ifndef MINIDXNN_CPP_FALLBACK_ONLY
+    if (!useCppFallback) {
+      // GPU path (placeholder — currently delegates to SW via outerProductAccHW)
+      (void)gfxContext;
+      (void)useSoftwareLinAlgImpl;
+      // TODO: Add GPU kernel dispatch for outerProductAcc test
+      // For now, fall through to C++ fallback
+      std::vector<std::uint8_t> outputData(totalBytes, 0);
+      RWByteAddressBuffer outputBuf{outputData};
+
+      cppFallbackOuterProductAcc<Type, ROW_SIZE, COLUMN_SIZE>(outputBuf, vectorStride, numTasks);
+
+      for (size_t r = 0; r < rowSize; ++r)
+        for (size_t c = 0; c < columnSize; ++c)
+          std::memcpy(&result[r * columnSize + c],
+                      outputData.data() + r * vectorStride + c * sizeof(Type),
+                      sizeof(Type));
+    } else
+#endif // !MINIDXNN_CPP_FALLBACK_ONLY
+    {
+      std::vector<std::uint8_t> outputData(totalBytes, 0);
+      RWByteAddressBuffer outputBuf{outputData};
+
+      cppFallbackOuterProductAcc<Type, ROW_SIZE, COLUMN_SIZE>(outputBuf, vectorStride, numTasks);
+
+      for (size_t r = 0; r < rowSize; ++r)
+        for (size_t c = 0; c < columnSize; ++c)
+          std::memcpy(&result[r * columnSize + c],
+                      outputData.data() + r * vectorStride + c * sizeof(Type),
+                      sizeof(Type));
     }
 
-  using namespace mininn;
-  DISPATCH_ACT(IdentityActivation,  IdentityActivation,  ex::ActivationType::IDENTITY, ex::ActivationType::IDENTITY)
-  DISPATCH_ACT(IdentityActivation,  SigmoidActivation,   ex::ActivationType::IDENTITY, ex::ActivationType::SIGMOID)
-  DISPATCH_ACT(ReluActivation,      IdentityActivation,  ex::ActivationType::RELU,     ex::ActivationType::IDENTITY)
-  DISPATCH_ACT(ReluActivation,      SigmoidActivation,   ex::ActivationType::RELU,     ex::ActivationType::SIGMOID)
-  DISPATCH_ACT(SigmoidActivation,   SigmoidActivation,   ex::ActivationType::SIGMOID,  ex::ActivationType::SIGMOID)
-  DISPATCH_ACT(LeakyReluActivation, SigmoidActivation,   ex::ActivationType::LEAKY_RELU, ex::ActivationType::SIGMOID)
-  DISPATCH_ACT(LeakyReluActivation, IdentityActivation,  ex::ActivationType::LEAKY_RELU, ex::ActivationType::IDENTITY)
+    const auto assertTest = [&testParams](const char* expectedLabel, const char* valueLabel, const Type expected, const Type value)
+    {
+      return assertSimilarity(expectedLabel, valueLabel, expected, value, testParams.m_similarityThreshold);
+    };
 
-  #undef DISPATCH_ACT
-  return false;
-}
-
-// Dispatch NUM_LAYERS, HIDDEN_DIM, INPUT_DIM, OUTPUT_DIM at runtime
-template <ex::Arithmetic Type>
-bool dispatchForward(size_t numLayers, size_t hiddenDim, size_t inputDim, size_t outputDim,
-                     ex::ActivationType hiddenAct, ex::ActivationType lastAct,
-                     ex::PackedMlpBuffers<Type>& packed,
-                     const std::vector<Type>& inputs,
-                     std::vector<Type>& outputs,
-                     size_t numTasks,
-                     bool hasBias = true)
-{
-  #define DISPATCH_FWD(NL, HD, ID, OD) \
-    if (numLayers == (NL) && hiddenDim == (HD) && inputDim == (ID) && outputDim == (OD)) { \
-      if (hasBias) \
-        return dispatchForwardActivation<Type, (NL), (HD), (ID), (OD), true>(hiddenAct, lastAct, packed, inputs, outputs, numTasks); \
-      else \
-        return dispatchForwardActivation<Type, (NL), (HD), (ID), (OD), false>(hiddenAct, lastAct, packed, inputs, outputs, numTasks); \
+    for (size_t r = 0; r < rowSize; ++r) {
+      for (size_t c = 0; c < columnSize; ++c) {
+        // lhs[r] = r+1, rhs[c] = 1.0 => expected = numTasks * (r+1)
+        const Type expected = static_cast<Type>(static_cast<float>(numTasks * (r + 1)));
+        EXPECT_PRED_FORMAT2(assertTest, expected, result[r * columnSize + c]);
+      }
     }
-
-  // Single layer (numBackboneLayers=0)
-  DISPATCH_FWD(1, 2, 2, 2)
-  DISPATCH_FWD(1, 4, 2, 4)
-  DISPATCH_FWD(1, 16, 16, 4)
-  DISPATCH_FWD(1, 16, 16, 16)
-  // 2 layers (1 backbone)
-  DISPATCH_FWD(2, 2, 2, 2)
-  DISPATCH_FWD(2, 8, 2, 4)
-  // 3 layers (2 backbone)
-  DISPATCH_FWD(3, 8, 2, 4)
-  DISPATCH_FWD(3, 16, 8, 4)
-  // 4 layers (3 backbone)
-  DISPATCH_FWD(4, 6, 2, 4)
-  DISPATCH_FWD(4, 8, 2, 4)
-
-  #undef DISPATCH_FWD
-  return false;
-}
-
-// ----------------------------------------------------------------------------
-// Backward test — dispatched on NUM_LAYERS, HIDDEN_DIM, INPUT_DIM, OUTPUT_DIM, activations
-// ----------------------------------------------------------------------------
-
-template <ex::Arithmetic Type, uint NUM_LAYERS, int HIDDEN_DIM, int INPUT_DIM, int OUTPUT_DIM,
-          typename ActivationHiddenT, typename ActivationLastT, bool HAS_BIAS>
-void cppFallbackBackwardKernel(ex::PackedMlpBuffers<Type>& packed,
-                               const std::vector<Type>& inputs,
-                               const std::vector<Type>& targets,
-                               std::vector<Type>& outputs,
-                               std::vector<std::uint8_t>& weightGradBuf,
-                               std::vector<std::uint8_t>& biasGradBuf,
-                               size_t batchSize)
-{
-  constexpr auto DT = ex::DxLinalgDataTypeOf<Type>::value;
-
-  const size_t logitsStride = ex::alignBytes(static_cast<size_t>(HIDDEN_DIM) * sizeof(Type), ex::VECTOR_ALIGNMENT);
-  const size_t logitsPerSample = logitsStride * NUM_LAYERS;
-  const size_t logitsBufSize = logitsPerSample * batchSize;
-
-  weightGradBuf.assign(packed.weightBuf.size(), 0);
-  biasGradBuf.assign(packed.biasBuf.size(), 0);
-  std::vector<std::uint8_t> logitsBuf(logitsBufSize, 0);
-
-  ByteAddressBuffer inputBuf{inputs};
-  ByteAddressBuffer targetBuf{targets};
-  RWByteAddressBuffer outputBuf{outputs};
-
-  RWByteAddressBuffer wGradBAB{weightGradBuf};
-  RWByteAddressBuffer bGradBAB{biasGradBuf};
-  RWByteAddressBuffer logitsBAB{logitsBuf};
-
-  // Forward pass for all samples
-  for (uint s = 0; s < static_cast<uint>(batchSize); ++s) {
-    testkernel::trainingForwardStep<Type, NUM_LAYERS, HIDDEN_DIM, INPUT_DIM, OUTPUT_DIM,
-        DT, dx::linalg::MATRIX_LAYOUT_ROW_MAJOR, ActivationHiddenT, ActivationLastT,
-        128, 16, 64, HAS_BIAS>(
-        s, inputBuf, outputBuf, packed.weightBAB(), packed.biasBAB(),
-        logitsBAB, packed.matrixSizes,
-        static_cast<uint>(batchSize), static_cast<uint>(logitsPerSample));
-  }
-
-  // Backward pass for all samples
-  RWByteAddressBuffer outputReadBuf{outputs};
-
-  for (uint s = 0; s < static_cast<uint>(batchSize); ++s) {
-    testkernel::trainingBackwardStep<Type, NUM_LAYERS, HIDDEN_DIM, INPUT_DIM, OUTPUT_DIM,
-        DT, dx::linalg::MATRIX_LAYOUT_ROW_MAJOR, ActivationHiddenT, ActivationLastT,
-        128, 16, 64, HAS_BIAS>(
-        s, inputBuf, targetBuf, outputReadBuf, packed.weightBAB(), packed.biasBAB(),
-        wGradBAB, bGradBAB, logitsBAB, packed.matrixSizes,
-        static_cast<uint>(batchSize), static_cast<uint>(logitsPerSample));
   }
 }
-
-// Dispatch activation types for backward
-template <ex::Arithmetic Type, uint NUM_LAYERS, int HIDDEN_DIM, int INPUT_DIM, int OUTPUT_DIM, bool HAS_BIAS>
-bool dispatchBackwardActivation(ex::ActivationType hiddenAct,
-                                ex::ActivationType lastAct,
-                                ex::PackedMlpBuffers<Type>& packed,
-                                const std::vector<Type>& inputs,
-                                const std::vector<Type>& targets,
-                                std::vector<Type>& outputs,
-                                std::vector<std::uint8_t>& weightGradBuf,
-                                std::vector<std::uint8_t>& biasGradBuf,
-                                size_t batchSize)
-{
-  #define DISPATCH_BACK_ACT(HiddenT, LastT, hiddenE, lastE) \
-    if (hiddenAct == (hiddenE) && lastAct == (lastE)) { \
-      cppFallbackBackwardKernel<Type, NUM_LAYERS, HIDDEN_DIM, INPUT_DIM, OUTPUT_DIM, HiddenT, LastT, HAS_BIAS>( \
-          packed, inputs, targets, outputs, weightGradBuf, biasGradBuf, batchSize); \
-      return true; \
-    }
-
-  using namespace mininn;
-  DISPATCH_BACK_ACT(LeakyReluActivation, SigmoidActivation, ex::ActivationType::LEAKY_RELU, ex::ActivationType::SIGMOID)
-  DISPATCH_BACK_ACT(IdentityActivation,  IdentityActivation, ex::ActivationType::IDENTITY,  ex::ActivationType::IDENTITY)
-  DISPATCH_BACK_ACT(ReluActivation,      SigmoidActivation,  ex::ActivationType::RELU,      ex::ActivationType::SIGMOID)
-
-  #undef DISPATCH_BACK_ACT
-  return false;
-}
-
-// Dispatch NUM_LAYERS, HIDDEN_DIM, INPUT_DIM, OUTPUT_DIM for backward
-template <ex::Arithmetic Type>
-bool dispatchBackward(size_t numLayers, size_t hiddenDim, size_t inputDim, size_t outputDim,
-                      ex::ActivationType hiddenAct, ex::ActivationType lastAct,
-                      ex::PackedMlpBuffers<Type>& packed,
-                      const std::vector<Type>& inputs,
-                      const std::vector<Type>& targets,
-                      std::vector<Type>& outputs,
-                      std::vector<std::uint8_t>& weightGradBuf,
-                      std::vector<std::uint8_t>& biasGradBuf,
-                      size_t batchSize,
-                      bool hasBias = true)
-{
-  #define DISPATCH_BACK(NL, HD, ID, OD) \
-    if (numLayers == (NL) && hiddenDim == (HD) && inputDim == (ID) && outputDim == (OD)) { \
-      if (hasBias) \
-        return dispatchBackwardActivation<Type, (NL), (HD), (ID), (OD), true>(hiddenAct, lastAct, packed, inputs, targets, outputs, weightGradBuf, biasGradBuf, batchSize); \
-      else \
-        return dispatchBackwardActivation<Type, (NL), (HD), (ID), (OD), false>(hiddenAct, lastAct, packed, inputs, targets, outputs, weightGradBuf, biasGradBuf, batchSize); \
-    }
-
-  // Single layer (numBackboneLayers=0): inputDim=2, outputDim=4
-  DISPATCH_BACK(1, 4, 2, 4)
-  // 2 layers (1 backbone)
-  DISPATCH_BACK(2, 8, 2, 4)
-  // 3 layers (2 backbone)
-  DISPATCH_BACK(3, 8, 2, 4)
-  // 4 layers (3 backbone)
-  DISPATCH_BACK(4, 6, 2, 4)
-  DISPATCH_BACK(4, 8, 2, 4)
-
-  #undef DISPATCH_BACK
-  return false;
-}
-
-// Smoke test: identity weights with sigmoid activation (verifies basic mlp.hlsl C++ path)
-template <typename Type>
-void testCppFallbackForwardSmoke(const CppFallbackTest& /* test */)
-{
-  constexpr unsigned int NUM_LAYERS = 1;
-  constexpr int DIM = 2;
-
-  std::vector<std::uint8_t> weightBuf(256, 0);
-  std::vector<std::uint8_t> biasBuf(128, 0);
-
-  {
-    Type* w0 = reinterpret_cast<Type*>(weightBuf.data());
-    w0[0] = Type(1.0f);
-    w0[1] = Type(0.0f);
-    Type* w1 = reinterpret_cast<Type*>(weightBuf.data() + 16);
-    w1[0] = Type(0.0f);
-    w1[1] = Type(1.0f);
-  }
-  {
-    Type* b = reinterpret_cast<Type*>(biasBuf.data());
-    b[0] = Type(0.1f);
-    b[1] = Type(0.2f);
-  }
-
-  ByteAddressBuffer wBuf{weightBuf};
-  ByteAddressBuffer bBuf{biasBuf};
-
-  constexpr auto DT = ex::DxLinalgDataTypeOf<Type>::value;
-  using LayerDataRefT = mininn::InferenceLayerDataRef<
-    NUM_LAYERS, DIM,
-    DT,
-    dx::linalg::MATRIX_LAYOUT_ROW_MAJOR,
-    DT,
-    DT,
-    mininn::IdentityActivation,
-    mininn::SigmoidActivation,
-    DT,
-    128, 16, 64>;
-
-  LayerDataRefT layerData;
-  layerData.setWeightData(wBuf, uint2{128u, 128u}, 0);
-  layerData.setBiasData(bBuf, 0);
-
-  vector<Type, DIM> input;
-  input[0] = Type(0.5f);
-  input[1] = Type(0.3f);
-  vector<Type, DIM> output;
-  mininn::forward(output, input, layerData);
-
-  const float expected0 = 1.0f / (1.0f + std::exp(-0.6f));
-  const float expected1 = 1.0f / (1.0f + std::exp(-0.5f));
-  EXPECT_NEAR(static_cast<float>(output[0]), expected0, 0.01f);
-  EXPECT_NEAR(static_cast<float>(output[1]), expected1, 0.01f);
-}
-
-} // namespace
-
 // ============================================================================
-// Unified MLP test functions — shared between CoopVecTest and CppFallbackTest
+// Unified MLP test functions — shared between LinearAlgebraMatrixTest and CppFallbackTest
 // ============================================================================
-
-namespace {
 
 template <ex::Arithmetic Type>
 auto testSimpleMlpForwardFloat(const test::TestParameters& testParams,
@@ -834,8 +639,12 @@ auto testSimpleMlpForwardFloat(const test::TestParameters& testParams,
                                const size_t hiddenLayerDim,
                                const size_t numBackboneLayers,
                                const bool hasBias,
+                               ex::MatrixLayout weightMatrixLayout,
                                const size_t numOfTests = 5) -> void
 {
+#ifdef MINIDXNN_CPP_FALLBACK_ONLY
+  (void)weightMatrixLayout;
+#endif
   ex::Xoshiro128Plus rng{testParams.m_seed};
 
   for (size_t trial = 0; trial < numOfTests; ++trial) {
@@ -857,19 +666,38 @@ auto testSimpleMlpForwardFloat(const test::TestParameters& testParams,
       const std::array includeDirList = ex::getHlslIncludeDirList();
       std::shared_ptr program = ex::createGfxProgram(gfxContext, "simple_mlp_inference_test", shaderDir, includeDirList);
 
-      std::vector<size_t> matrixSizeList;
-      matrixSizeList.resize(numBackboneLayers + 1);
+      // Build D3D12MatrixInfo list from MLP layers
+      std::vector<ex::D3D12MatrixInfo<Type>> matrixInfoList;
+      matrixInfoList.reserve(mlpData.size());
+      for (const auto& layer : mlpData) {
+        ex::D3D12MatrixInfo<Type> info;
+        info.m_srcData = layer.weightData();
+        info.m_rowSize = layer.outputDimension();
+        info.m_columnSize = layer.inputDimension();
+        info.m_layout = weightMatrixLayout;
+        matrixInfoList.push_back(info);
+      }
 
       // Create buffers
       std::shared_ptr inputBuffer = ex::createGfxBuffer<Type>(gfxContext, inputs);
       std::shared_ptr outputBuffer = ex::createGfxBuffer<Type>(gfxContext, references.size());
-      std::shared_ptr weightBuffer = ex::convertToMatrixBuffer<Type>(gfxContext, mlpData, testParams.m_weightMatrixLayout, matrixSizeList, ex::MATRIX_ALIGNMENT, ex::MATRIX_VECTOR_STRIDE_ALIGNMENT);
-      std::shared_ptr biasBuffer = ex::convertToVectorBuffer<Type>(gfxContext, mlpData, ex::VECTOR_ALIGNMENT);
+      std::shared_ptr weightBuffer = ex::packAsD3D12MatrixBuffer<Type>(gfxContext, matrixInfoList);
+      ASSERT_TRUE(weightBuffer) << "packAsD3D12MatrixBuffer failed for layout " << static_cast<int>(weightMatrixLayout);
+
+      // Build D3D12VectorInfo list from MLP layers
+      std::vector<ex::D3D12VectorInfo<Type>> vectorInfoList;
+      vectorInfoList.reserve(mlpData.size());
+      for (const auto& layer : mlpData) {
+        ex::D3D12VectorInfo<Type> info;
+        info.m_srcData = layer.biasData();
+        vectorInfoList.push_back(info);
+      }
+      std::shared_ptr biasBuffer = ex::packAsD3D12VectorBuffer<Type>(gfxContext, vectorInfoList);
 
       // Create and run the test kernel
       {
         const ex::OptionString kernelName = ex::createOptionString("testMlpInferenceF{}Kernel", 8 * sizeof(Type));
-        std::vector kernelDefinitions = buildMlpTestDefinitions(testParams, inputDim, outputDim, hiddenLayerDim, numBackboneLayers + 1, activationHidden, activationLast, hasBias, useSoftwareLinAlgImpl);
+        std::vector kernelDefinitions = buildMlpTestDefinitions(testParams, inputDim, outputDim, hiddenLayerDim, numBackboneLayers + 1, activationHidden, activationLast, hasBias, useSoftwareLinAlgImpl, matrixInfoList[0].m_layout, matrixInfoList[0].m_alignment, matrixInfoList[0].m_vectorStrideAlignment, vectorInfoList[0].m_alignment);
         kernelDefinitions.push_back(ex::createOptionString("MINIDXNN_NUM_TASKS={}", numTasks));
         std::shared_ptr kernel = ex::createGfxComputeKernel(gfxContext, *program, kernelName.data(), kernelDefinitions);
         const size_t threadGroupSize = calcThreadGroupSize(numTasks, testParams.m_numThreadsX);
@@ -881,8 +709,8 @@ auto testSimpleMlpForwardFloat(const test::TestParameters& testParams,
               ex::bind(*biasBuffer, "BiasBuffer"),
             },
             {
-              ex::bind(static_cast<std::int32_t>(matrixSizeList.front()), "TEST_WEIGHT_MATRIX_SIZE_FIRST"),
-              ex::bind(static_cast<std::int32_t>((matrixSizeList.size() > 1) ? matrixSizeList.at(1) : 0), "TEST_WEIGHT_MATRIX_SIZE_HIDDEN"),
+              ex::bind(static_cast<std::int32_t>(matrixInfoList.front().m_dataSize), "TEST_WEIGHT_MATRIX_SIZE_FIRST"),
+              ex::bind(static_cast<std::int32_t>((matrixInfoList.size() > 1) ? matrixInfoList.at(1).m_dataSize : 0), "TEST_WEIGHT_MATRIX_SIZE_HIDDEN"),
             });
       }
 
@@ -931,8 +759,12 @@ auto testSimpleMlpBackwardFloat(const test::TestParameters& testParams,
                                 const size_t numBackboneLayers,
                                 const size_t batchSize,
                                 const bool hasBias,
+                                ex::MatrixLayout weightMatrixLayout,
                                 const size_t numOfTests = 5) -> void
 {
+#ifdef MINIDXNN_CPP_FALLBACK_ONLY
+  (void)weightMatrixLayout;
+#endif
   constexpr size_t inputDim = 2;
   constexpr size_t outputDim = 4;
   constexpr ex::ActivationType activationHidden = ex::ActivationType::LEAKY_RELU;
@@ -946,11 +778,29 @@ auto testSimpleMlpBackwardFloat(const test::TestParameters& testParams,
   std::shared_ptr<GfxKernel> gfxFwdKernel;
   std::shared_ptr<GfxKernel> gfxBwdKernel;
   if (!useCppFallback) {
+    // Pre-check: verify the GPU supports matrix conversion for optimal layouts
+    if (ex::needsMatrixConversion(weightMatrixLayout)) {
+      constexpr uint32_t dataType = ex::toD3D12DataType<Type>();
+      const uint32_t d3dLayout = ex::toD3D12MatrixLayout(weightMatrixLayout);
+      ASSERT_NE(gfxGetMatrixMemorySize(gfxContext, static_cast<uint32_t>(hiddenLayerDim), static_cast<uint32_t>(inputDim), d3dLayout, dataType, 0), 0u)
+          << "GPU does not support layout " << static_cast<int>(weightMatrixLayout) << " conversion";
+    }
+
+    // Query representative D3D12 info for kernel define values
+    ex::D3D12MatrixInfo<Type> representativeMatrixInfo;
+    representativeMatrixInfo.m_rowSize = hiddenLayerDim;
+    representativeMatrixInfo.m_columnSize = inputDim;
+    representativeMatrixInfo.m_layout = weightMatrixLayout;
+    ex::getD3D12MatrixInfo(representativeMatrixInfo);
+    ex::D3D12VectorInfo<Type> representativeVectorInfo;
+    representativeVectorInfo.m_srcData = {};
+    ex::getD3D12VectorInfo(representativeVectorInfo);
+
     const std::filesystem::path shaderDir = ex::getComputeShaderDir();
     const std::array includeDirList = ex::getHlslIncludeDirList();
     gfxProgram = ex::createGfxProgram(gfxContext, "simple_mlp_training_test", shaderDir, includeDirList);
 
-    std::vector kernelDefinitions = buildMlpTestDefinitions(testParams, inputDim, outputDim, hiddenLayerDim, numBackboneLayers + 1, activationHidden, activationLast, hasBias, useSoftwareLinAlgImpl);
+    std::vector kernelDefinitions = buildMlpTestDefinitions(testParams, inputDim, outputDim, hiddenLayerDim, numBackboneLayers + 1, activationHidden, activationLast, hasBias, useSoftwareLinAlgImpl, representativeMatrixInfo.m_layout, representativeMatrixInfo.m_alignment, representativeMatrixInfo.m_vectorStrideAlignment, representativeVectorInfo.m_alignment);
     kernelDefinitions.push_back(ex::createOptionString("MINIDXNN_BATCH_SIZE={}", batchSize));
     const ex::OptionString fwdName = ex::createOptionString("testMlpTrainingForwardF{}Kernel", 8 * sizeof(Type));
     gfxFwdKernel = ex::createGfxComputeKernel(gfxContext, *gfxProgram, fwdName.data(), kernelDefinitions);
@@ -995,14 +845,32 @@ auto testSimpleMlpBackwardFloat(const test::TestParameters& testParams,
 #ifndef MINIDXNN_CPP_FALLBACK_ONLY
     if (!useCppFallback) {
       // GPU path
-      std::vector<size_t> matrixSizeList;
-      matrixSizeList.resize(numBackboneLayers + 1);
+      // Build D3D12 matrix info list from MLP layers
+      std::vector<ex::D3D12MatrixInfo<Type>> matrixInfoList;
+      matrixInfoList.reserve(mlpData.size());
+      for (const LayerT& layer : mlpData) {
+        ex::D3D12MatrixInfo<Type> info;
+        info.m_srcData = layer.weightData();
+        info.m_rowSize = layer.outputDimension();
+        info.m_columnSize = layer.inputDimension();
+        info.m_layout = weightMatrixLayout;
+        matrixInfoList.push_back(info);
+      }
+      // Build D3D12 vector info list from MLP layers
+      std::vector<ex::D3D12VectorInfo<Type>> vectorInfoList;
+      vectorInfoList.reserve(mlpData.size());
+      for (const LayerT& layer : mlpData) {
+        ex::D3D12VectorInfo<Type> info;
+        info.m_srcData = layer.biasData();
+        vectorInfoList.push_back(info);
+      }
       // Create buffers
       std::shared_ptr inputBuffer = ex::createGfxBuffer<Type>(gfxContext, inputs);
       std::shared_ptr targetBuffer = ex::createGfxBuffer<Type>(gfxContext, targets);
       std::shared_ptr outputBuffer = ex::createGfxBuffer<Type>(gfxContext, outputs.size());
-      std::shared_ptr weightBuffer = ex::convertToMatrixBuffer<Type>(gfxContext, mlpData, testParams.m_weightMatrixLayout, matrixSizeList, ex::MATRIX_ALIGNMENT, ex::MATRIX_VECTOR_STRIDE_ALIGNMENT);
-      std::shared_ptr biasBuffer = ex::convertToVectorBuffer<Type>(gfxContext, mlpData, ex::VECTOR_ALIGNMENT);
+      std::shared_ptr weightBuffer = ex::packAsD3D12MatrixBuffer<Type>(gfxContext, matrixInfoList);
+      ASSERT_TRUE(weightBuffer) << "packAsD3D12MatrixBuffer failed for layout " << static_cast<int>(weightMatrixLayout);
+      std::shared_ptr biasBuffer = ex::packAsD3D12VectorBuffer<Type>(gfxContext, vectorInfoList);
       std::shared_ptr weightGradBuffer = ex::createGfxBuffer<Type>(gfxContext, weightBuffer->getSize() / sizeof(Type));
       const size_t biasStride = biasBuffer->getSize() / sizeof(Type);
       std::shared_ptr biasGradBuffer = ex::createGfxBuffer<Type>(gfxContext, biasStride);
@@ -1018,8 +886,8 @@ auto testSimpleMlpBackwardFloat(const test::TestParameters& testParams,
             ex::bind(*logitsCacheBuffer, "LogitsCacheBuffer"),
           },
           {
-            ex::bind(static_cast<std::int32_t>(matrixSizeList.front()), "TEST_WEIGHT_MATRIX_SIZE_FIRST"),
-            ex::bind(static_cast<std::int32_t>((matrixSizeList.size() > 1) ? matrixSizeList.at(1) : 0), "TEST_WEIGHT_MATRIX_SIZE_HIDDEN"),
+            ex::bind(static_cast<std::int32_t>(matrixInfoList.front().m_dataSize), "TEST_WEIGHT_MATRIX_SIZE_FIRST"),
+            ex::bind(static_cast<std::int32_t>((matrixInfoList.size() > 1) ? matrixInfoList.at(1).m_dataSize : 0), "TEST_WEIGHT_MATRIX_SIZE_HIDDEN"),
             ex::bind(static_cast<std::int32_t>(biasStride * sizeof(Type)), "TEST_BIAS_STRIDE"),
           });
       { // Test outputs
@@ -1042,9 +910,9 @@ auto testSimpleMlpBackwardFloat(const test::TestParameters& testParams,
             const size_t layerOutDim = mlpData[i].outputDimension();
             const size_t srcIndex = batchId * biasStride + i * ex::alignN<Type>(layerInDim, ex::VECTOR_ALIGNMENT);
             const size_t dstIndex = batchId * cacheStride + i * layerInDim;
-            const auto srcBegin = static_cast<std::ptrdiff_t>(srcIndex);
-            const auto srcEnd = static_cast<std::ptrdiff_t>(srcIndex + layerOutDim);
-            const auto dstBegin = static_cast<std::ptrdiff_t>(dstIndex);
+            const std::ptrdiff_t srcBegin = static_cast<std::ptrdiff_t>(srcIndex);
+            const std::ptrdiff_t srcEnd = static_cast<std::ptrdiff_t>(srcIndex + layerOutDim);
+            const std::ptrdiff_t dstBegin = static_cast<std::ptrdiff_t>(dstIndex);
             std::copy(data.begin() + srcBegin, data.begin() + srcEnd, logitsData.begin() + dstBegin);
           }
         }
@@ -1052,6 +920,9 @@ auto testSimpleMlpBackwardFloat(const test::TestParameters& testParams,
         const std::string testLabel = std::format("MLP{} forward:  logits", trial + 1);
         ASSERT_TRUE(assertSimilarityBatch<Type>(logitsCache, logitsData, testParams.m_similarityThreshold, testLabel, testParams.m_enableDebugMode));
       }
+      gfxCommandClearBuffer(gfxContext, *weightGradBuffer);
+      gfxCommandClearBuffer(gfxContext, *biasGradBuffer);
+      gfxFinish(gfxContext);
       // Backward pass
       ex::runKernel(gfxContext, *gfxProgram, *gfxBwdKernel, threadGroupSize,
           {
@@ -1065,39 +936,20 @@ auto testSimpleMlpBackwardFloat(const test::TestParameters& testParams,
             ex::bind(*logitsCacheBuffer, "LogitsCacheBuffer"),
           },
           {
-            ex::bind(static_cast<std::int32_t>(matrixSizeList.front()), "TEST_WEIGHT_MATRIX_SIZE_FIRST"),
-            ex::bind(static_cast<std::int32_t>((matrixSizeList.size() > 1) ? matrixSizeList.at(1) : 0), "TEST_WEIGHT_MATRIX_SIZE_HIDDEN"),
+            ex::bind(static_cast<std::int32_t>(matrixInfoList.front().m_dataSize), "TEST_WEIGHT_MATRIX_SIZE_FIRST"),
+            ex::bind(static_cast<std::int32_t>((matrixInfoList.size() > 1) ? matrixInfoList.at(1).m_dataSize : 0), "TEST_WEIGHT_MATRIX_SIZE_HIDDEN"),
             ex::bind(static_cast<std::int32_t>(biasStride * sizeof(Type)), "TEST_BIAS_STRIDE"),
           });
       { // weight grad
-        std::shared_ptr staging = ex::createGfxBuffer<Type>(gfxContext, weightGradBuffer->getSize() / sizeof(Type), kGfxCpuAccess_Read);
-        ex::copyBuffer(gfxContext, *weightGradBuffer, *staging);
-        const std::span data = ex::mapToCpu<Type>(gfxContext, *staging);
-
-        const size_t n = std::transform_reduce(mlpData.begin(), mlpData.end(), static_cast<size_t>(0), std::plus{}, [](const LayerT& layer) -> size_t
-        {
-          return layer.weightGrads().size();
-        });
+        const std::vector<Type> actualGrads = ex::unpackD3D12MatrixBuffer<Type>(gfxContext, *weightGradBuffer, matrixInfoList);
 
         std::vector<Type> expectedGrads;
-        std::vector<Type> actualGrads;
-        expectedGrads.reserve(n);
-        actualGrads.reserve(n);
-
-        for (size_t layerIndex = 0, offset = 0; layerIndex < mlpData.size(); ++layerIndex) {
-          const LayerT& layer = mlpData[layerIndex];
+        expectedGrads.reserve(actualGrads.size());
+        for (const LayerT& layer : mlpData) {
           const ex::MatrixRef expected = layer.weightGradMatrix();
-          const size_t vectorStride = ex::alignN<Type>(expected.columnSize(), ex::MATRIX_VECTOR_STRIDE_ALIGNMENT);
-          const size_t matrixStride = ex::alignN<Type>(expected.rowSize() * vectorStride, ex::MATRIX_ALIGNMENT);
-          const std::span<Type> actualData{data.data() + offset, matrixStride};
-          const ex::MatrixRef<const Type> actual(expected.rowSize(), expected.columnSize(), vectorStride, actualData);
-          for (size_t row = 0; row < expected.rowSize(); ++row) {
-            for (size_t column = 0; column < expected.columnSize(); ++column) {
+          for (size_t row = 0; row < expected.rowSize(); ++row)
+            for (size_t column = 0; column < expected.columnSize(); ++column)
               expectedGrads.emplace_back(expected(row, column));
-              actualGrads.emplace_back(actual(row, column));
-            }
-          }
-          offset += matrixStride;
         }
 
         const std::string testLabel = std::format("MLP{} backward: weight grads", trial + 1);
@@ -1184,44 +1036,108 @@ auto testSimpleMlpBackwardFloat(const test::TestParameters& testParams,
 } // namespace
 
 // ============================================================================
-// GPU test macros (CoopVecTest)
+// GPU test macros (LinearAlgebraMatrixTest)
 // ============================================================================
 
 #ifndef MINIDXNN_CPP_FALLBACK_ONLY
 
 // --- Linear algebra test macros ---
 #define ADD_MATRIX_MUL_TEST(typeName, type, inputDim, outputDim) \
-  TEST_P(CoopVecTest, MatrixMul_ ## typeName ## _ ## inputDim ## x ## outputDim ) \
+  TEST_P(LinearAlgebraMatrixTest, MatrixMul_ ## typeName ## _ ## inputDim ## x ## outputDim ## _RowMajor ) \
   { \
-    ::testLinearAlgebraMul<type, inputDim, outputDim, false, false>(params(), context(), false, false); \
+    ::testLinearAlgebraMul<type, inputDim, outputDim, false, false>(params(), context(), false, false, ex::MatrixLayout::ROW_MAJOR); \
   } \
-  TEST_P(CoopVecTest, MatrixMulAdd_ ## typeName ## _ ## inputDim ## x ## outputDim ) \
+  TEST_P(LinearAlgebraMatrixTest, MatrixMulAdd_ ## typeName ## _ ## inputDim ## x ## outputDim ## _RowMajor ) \
   { \
-    ::testLinearAlgebraMul<type, inputDim, outputDim, false, true>(params(), context(), false, false); \
+    ::testLinearAlgebraMul<type, inputDim, outputDim, false, true>(params(), context(), false, false, ex::MatrixLayout::ROW_MAJOR); \
   } \
-  TEST_P(CoopVecTest, MatrixMul_ ## typeName ## _ ## inputDim ## x ## outputDim ## _Software) \
+  TEST_P(LinearAlgebraMatrixTest, MatrixMul_ ## typeName ## _ ## inputDim ## x ## outputDim ## _ColumnMajor ) \
   { \
-    ::testLinearAlgebraMul<type, inputDim, outputDim, false, false>(params(), context(), true, false); \
+    ::testLinearAlgebraMul<type, inputDim, outputDim, false, false>(params(), context(), false, false, ex::MatrixLayout::COLUMN_MAJOR); \
   } \
-  TEST_P(CoopVecTest, MatrixMulAdd_ ## typeName ## _ ## inputDim ## x ## outputDim ## _Software) \
+  TEST_P(LinearAlgebraMatrixTest, MatrixMulAdd_ ## typeName ## _ ## inputDim ## x ## outputDim ## _ColumnMajor ) \
   { \
-    ::testLinearAlgebraMul<type, inputDim, outputDim, false, true>(params(), context(), true, false); \
+    ::testLinearAlgebraMul<type, inputDim, outputDim, false, true>(params(), context(), false, false, ex::MatrixLayout::COLUMN_MAJOR); \
   } \
-  TEST_P(CoopVecTest, MatrixMul_ ## typeName ## _ ## inputDim ## x ## outputDim ## _Transposed ) \
+  TEST_P(LinearAlgebraMatrixTest, MatrixMul_ ## typeName ## _ ## inputDim ## x ## outputDim ## _MulOptimal ) \
   { \
-    ::testLinearAlgebraMul<type, inputDim, outputDim, true, false>(params(), context(), false, false); \
+    ::testLinearAlgebraMul<type, inputDim, outputDim, false, false>(params(), context(), false, false, ex::MatrixLayout::MUL_OPTIMAL); \
   } \
-  TEST_P(CoopVecTest, MatrixMulAdd_ ## typeName ## _ ## inputDim ## x ## outputDim ## _Transposed) \
+  TEST_P(LinearAlgebraMatrixTest, MatrixMulAdd_ ## typeName ## _ ## inputDim ## x ## outputDim ## _MulOptimal ) \
   { \
-    ::testLinearAlgebraMul<type, inputDim, outputDim, true, true>(params(), context(), false, false); \
+    ::testLinearAlgebraMul<type, inputDim, outputDim, false, true>(params(), context(), false, false, ex::MatrixLayout::MUL_OPTIMAL); \
   } \
-  TEST_P(CoopVecTest, MatrixMul_ ## typeName ## _ ## inputDim ## x ## outputDim ## _Transposed_Software) \
+  TEST_P(LinearAlgebraMatrixTest, MatrixMul_ ## typeName ## _ ## inputDim ## x ## outputDim ## _OuterProductOptimal ) \
   { \
-    ::testLinearAlgebraMul<type, inputDim, outputDim, true, false>(params(), context(), true, false); \
+    ::testLinearAlgebraMul<type, inputDim, outputDim, false, false>(params(), context(), false, false, ex::MatrixLayout::OUTER_PRODUCT_OPTIMAL); \
   } \
-  TEST_P(CoopVecTest, MatrixMulAdd_ ## typeName ## _ ## inputDim ## x ## outputDim ## _Transposed_Software) \
+  TEST_P(LinearAlgebraMatrixTest, MatrixMulAdd_ ## typeName ## _ ## inputDim ## x ## outputDim ## _OuterProductOptimal ) \
   { \
-    ::testLinearAlgebraMul<type, inputDim, outputDim, true, true>(params(), context(), true, false); \
+    ::testLinearAlgebraMul<type, inputDim, outputDim, false, true>(params(), context(), false, false, ex::MatrixLayout::OUTER_PRODUCT_OPTIMAL); \
+  } \
+  TEST_P(LinearAlgebraMatrixTest, MatrixMul_ ## typeName ## _ ## inputDim ## x ## outputDim ## _RowMajor_Software) \
+  { \
+    ::testLinearAlgebraMul<type, inputDim, outputDim, false, false>(params(), context(), true, false, ex::MatrixLayout::ROW_MAJOR); \
+  } \
+  TEST_P(LinearAlgebraMatrixTest, MatrixMulAdd_ ## typeName ## _ ## inputDim ## x ## outputDim ## _RowMajor_Software) \
+  { \
+    ::testLinearAlgebraMul<type, inputDim, outputDim, false, true>(params(), context(), true, false, ex::MatrixLayout::ROW_MAJOR); \
+  } \
+  TEST_P(LinearAlgebraMatrixTest, MatrixMul_ ## typeName ## _ ## inputDim ## x ## outputDim ## _ColumnMajor_Software) \
+  { \
+    ::testLinearAlgebraMul<type, inputDim, outputDim, false, false>(params(), context(), true, false, ex::MatrixLayout::COLUMN_MAJOR); \
+  } \
+  TEST_P(LinearAlgebraMatrixTest, MatrixMulAdd_ ## typeName ## _ ## inputDim ## x ## outputDim ## _ColumnMajor_Software) \
+  { \
+    ::testLinearAlgebraMul<type, inputDim, outputDim, false, true>(params(), context(), true, false, ex::MatrixLayout::COLUMN_MAJOR); \
+  } \
+  TEST_P(LinearAlgebraMatrixTest, MatrixMul_ ## typeName ## _ ## inputDim ## x ## outputDim ## _Transposed_RowMajor ) \
+  { \
+    ::testLinearAlgebraMul<type, inputDim, outputDim, true, false>(params(), context(), false, false, ex::MatrixLayout::ROW_MAJOR); \
+  } \
+  TEST_P(LinearAlgebraMatrixTest, MatrixMulAdd_ ## typeName ## _ ## inputDim ## x ## outputDim ## _Transposed_RowMajor) \
+  { \
+    ::testLinearAlgebraMul<type, inputDim, outputDim, true, true>(params(), context(), false, false, ex::MatrixLayout::ROW_MAJOR); \
+  } \
+  TEST_P(LinearAlgebraMatrixTest, MatrixMul_ ## typeName ## _ ## inputDim ## x ## outputDim ## _Transposed_ColumnMajor ) \
+  { \
+    ::testLinearAlgebraMul<type, inputDim, outputDim, true, false>(params(), context(), false, false, ex::MatrixLayout::COLUMN_MAJOR); \
+  } \
+  TEST_P(LinearAlgebraMatrixTest, MatrixMulAdd_ ## typeName ## _ ## inputDim ## x ## outputDim ## _Transposed_ColumnMajor) \
+  { \
+    ::testLinearAlgebraMul<type, inputDim, outputDim, true, true>(params(), context(), false, false, ex::MatrixLayout::COLUMN_MAJOR); \
+  } \
+  TEST_P(LinearAlgebraMatrixTest, MatrixMul_ ## typeName ## _ ## inputDim ## x ## outputDim ## _Transposed_MulOptimal ) \
+  { \
+    ::testLinearAlgebraMul<type, inputDim, outputDim, true, false>(params(), context(), false, false, ex::MatrixLayout::MUL_OPTIMAL); \
+  } \
+  TEST_P(LinearAlgebraMatrixTest, MatrixMulAdd_ ## typeName ## _ ## inputDim ## x ## outputDim ## _Transposed_MulOptimal) \
+  { \
+    ::testLinearAlgebraMul<type, inputDim, outputDim, true, true>(params(), context(), false, false, ex::MatrixLayout::MUL_OPTIMAL); \
+  } \
+  TEST_P(LinearAlgebraMatrixTest, MatrixMul_ ## typeName ## _ ## inputDim ## x ## outputDim ## _Transposed_OuterProductOptimal ) \
+  { \
+    ::testLinearAlgebraMul<type, inputDim, outputDim, true, false>(params(), context(), false, false, ex::MatrixLayout::OUTER_PRODUCT_OPTIMAL); \
+  } \
+  TEST_P(LinearAlgebraMatrixTest, MatrixMulAdd_ ## typeName ## _ ## inputDim ## x ## outputDim ## _Transposed_OuterProductOptimal) \
+  { \
+    ::testLinearAlgebraMul<type, inputDim, outputDim, true, true>(params(), context(), false, false, ex::MatrixLayout::OUTER_PRODUCT_OPTIMAL); \
+  } \
+  TEST_P(LinearAlgebraMatrixTest, MatrixMul_ ## typeName ## _ ## inputDim ## x ## outputDim ## _Transposed_RowMajor_Software) \
+  { \
+    ::testLinearAlgebraMul<type, inputDim, outputDim, true, false>(params(), context(), true, false, ex::MatrixLayout::ROW_MAJOR); \
+  } \
+  TEST_P(LinearAlgebraMatrixTest, MatrixMulAdd_ ## typeName ## _ ## inputDim ## x ## outputDim ## _Transposed_RowMajor_Software) \
+  { \
+    ::testLinearAlgebraMul<type, inputDim, outputDim, true, true>(params(), context(), true, false, ex::MatrixLayout::ROW_MAJOR); \
+  } \
+  TEST_P(LinearAlgebraMatrixTest, MatrixMul_ ## typeName ## _ ## inputDim ## x ## outputDim ## _Transposed_ColumnMajor_Software) \
+  { \
+    ::testLinearAlgebraMul<type, inputDim, outputDim, true, false>(params(), context(), true, false, ex::MatrixLayout::COLUMN_MAJOR); \
+  } \
+  TEST_P(LinearAlgebraMatrixTest, MatrixMulAdd_ ## typeName ## _ ## inputDim ## x ## outputDim ## _Transposed_ColumnMajor_Software) \
+  { \
+    ::testLinearAlgebraMul<type, inputDim, outputDim, true, true>(params(), context(), true, false, ex::MatrixLayout::COLUMN_MAJOR); \
   }
 
 #if defined(MINIDXNN_TEST_ENABLE_FP32_TESTS) && (MINIDXNN_TEST_ENABLE_FP32_TESTS != 0)
@@ -1236,56 +1152,103 @@ ADD_MATRIX_MUL_TEST(F16, half_float::half, 64, 64);
 
 // --- VectorAcc test macros ---
 #if defined(MINIDXNN_TEST_ENABLE_FP32_TESTS) && (MINIDXNN_TEST_ENABLE_FP32_TESTS != 0)
-TEST_P(CoopVecTest, VectorAcc_F32_Software)
+TEST_P(LinearAlgebraMatrixTest, VectorAcc_F32)
+{
+  ::testVectorAcc<float>(params(), context(), false, false);
+}
+TEST_P(LinearAlgebraMatrixTest, VectorAcc_F32_Software)
 {
   ::testVectorAcc<float>(params(), context(), true, false);
 }
 #endif // MINIDXNN_TEST_ENABLE_FP32_TESTS
 
-TEST_P(CoopVecTest, VectorAcc_F16_Software)
+TEST_P(LinearAlgebraMatrixTest, VectorAcc_F16)
+{
+  ::testVectorAcc<half_float::half>(params(), context(), false, false);
+}
+TEST_P(LinearAlgebraMatrixTest, VectorAcc_F16_Software)
 {
   ::testVectorAcc<half_float::half>(params(), context(), true, false);
 }
 
 // --- AtomicFetchAdd test macros ---
 #if defined(MINIDXNN_TEST_ENABLE_FP32_TESTS) && (MINIDXNN_TEST_ENABLE_FP32_TESTS != 0)
-TEST_P(CoopVecTest, AtomicFetchAdd_F32)
+TEST_P(LinearAlgebraMatrixTest, AtomicFetchAdd_F32)
 {
   ::testAtomicFetchAdd<float>(params(), context(), false);
 }
 #endif // MINIDXNN_TEST_ENABLE_FP32_TESTS
 
-TEST_P(CoopVecTest, AtomicFetchAdd_F16)
+TEST_P(LinearAlgebraMatrixTest, AtomicFetchAdd_F16)
 {
   ::testAtomicFetchAdd<half_float::half>(params(), context(), false);
+}
+
+// --- OuterProductAcc test macros ---
+#if defined(MINIDXNN_TEST_ENABLE_FP32_TESTS) && (MINIDXNN_TEST_ENABLE_FP32_TESTS != 0)
+TEST_P(LinearAlgebraMatrixTest, OuterProductAcc_F32_4x4)
+{
+  ::testOuterProductAcc<float, 4, 4>(params(), context(), false, false, ex::MatrixLayout::OUTER_PRODUCT_OPTIMAL);
+}
+TEST_P(LinearAlgebraMatrixTest, OuterProductAcc_F32_4x4_Software)
+{
+  ::testOuterProductAcc<float, 4, 4>(params(), context(), true, false, ex::MatrixLayout::ROW_MAJOR);
+}
+TEST_P(LinearAlgebraMatrixTest, OuterProductAcc_F32_8x4)
+{
+  ::testOuterProductAcc<float, 8, 4>(params(), context(), false, false, ex::MatrixLayout::OUTER_PRODUCT_OPTIMAL);
+}
+TEST_P(LinearAlgebraMatrixTest, OuterProductAcc_F32_8x4_Software)
+{
+  ::testOuterProductAcc<float, 8, 4>(params(), context(), true, false, ex::MatrixLayout::ROW_MAJOR);
+}
+#endif // MINIDXNN_TEST_ENABLE_FP32_TESTS
+
+TEST_P(LinearAlgebraMatrixTest, OuterProductAcc_F16_4x4)
+{
+  ::testOuterProductAcc<half_float::half, 4, 4>(params(), context(), false, false, ex::MatrixLayout::OUTER_PRODUCT_OPTIMAL);
+}
+TEST_P(LinearAlgebraMatrixTest, OuterProductAcc_F16_4x4_Software)
+{
+  ::testOuterProductAcc<half_float::half, 4, 4>(params(), context(), true, false, ex::MatrixLayout::ROW_MAJOR);
+}
+TEST_P(LinearAlgebraMatrixTest, OuterProductAcc_F16_8x4)
+{
+  ::testOuterProductAcc<half_float::half, 8, 4>(params(), context(), false, false, ex::MatrixLayout::OUTER_PRODUCT_OPTIMAL);
+}
+TEST_P(LinearAlgebraMatrixTest, OuterProductAcc_F16_8x4_Software)
+{
+  ::testOuterProductAcc<half_float::half, 8, 4>(params(), context(), true, false, ex::MatrixLayout::ROW_MAJOR);
 }
 
 // --- MLP forward test macros ---
 
 #define ADD_SIMPLE_MLP_FORWARD_TEST(typeName, type, layerLabel, inputDim, outputDim, hiddenDim, numBackboneLayers) \
-  TEST_P(CoopVecTest, SimpleMlpForward_ ## typeName ## _ ## layerLabel ##_NoBias ) \
+  TEST_P(LinearAlgebraMatrixTest, SimpleMlpForward_ ## typeName ## _ ## layerLabel ##_NoBias ) \
   { \
-    ::testSimpleMlpForwardFloat<type>(params(), context(), false, false, inputDim, outputDim, hiddenDim, numBackboneLayers, false); \
+    const auto layout = params().m_mlpTestUseRowMajor ? ex::MatrixLayout::ROW_MAJOR : ex::MatrixLayout::MUL_OPTIMAL; \
+    ::testSimpleMlpForwardFloat<type>(params(), context(), false, false, inputDim, outputDim, hiddenDim, numBackboneLayers, false, layout); \
   } \
-  TEST_P(CoopVecTest, SimpleMlpForward_ ## typeName ## _ ## layerLabel ) \
+  TEST_P(LinearAlgebraMatrixTest, SimpleMlpForward_ ## typeName ## _ ## layerLabel ) \
   { \
-    ::testSimpleMlpForwardFloat<type>(params(), context(), false, false, inputDim, outputDim, hiddenDim, numBackboneLayers, true); \
+    const auto layout = params().m_mlpTestUseRowMajor ? ex::MatrixLayout::ROW_MAJOR : ex::MatrixLayout::MUL_OPTIMAL; \
+    ::testSimpleMlpForwardFloat<type>(params(), context(), false, false, inputDim, outputDim, hiddenDim, numBackboneLayers, true, layout); \
   } \
-  TEST_P(CoopVecTest, SimpleMlpForward_ ## typeName ## _ ## layerLabel ##_NoBias_Software ) \
+  TEST_P(LinearAlgebraMatrixTest, SimpleMlpForward_ ## typeName ## _ ## layerLabel ##_NoBias_Software ) \
   { \
-    ::testSimpleMlpForwardFloat<type>(params(), context(), true, false, inputDim, outputDim, hiddenDim, numBackboneLayers, false); \
+    ::testSimpleMlpForwardFloat<type>(params(), context(), true, false, inputDim, outputDim, hiddenDim, numBackboneLayers, false, ex::MatrixLayout::ROW_MAJOR); \
   } \
-  TEST_P(CoopVecTest, SimpleMlpForward_ ## typeName ## _ ## layerLabel ##_Software ) \
+  TEST_P(LinearAlgebraMatrixTest, SimpleMlpForward_ ## typeName ## _ ## layerLabel ##_Software ) \
   { \
-    ::testSimpleMlpForwardFloat<type>(params(), context(), true, false, inputDim, outputDim, hiddenDim, numBackboneLayers, true); \
+    ::testSimpleMlpForwardFloat<type>(params(), context(), true, false, inputDim, outputDim, hiddenDim, numBackboneLayers, true, ex::MatrixLayout::ROW_MAJOR); \
   } \
-  TEST_P(CoopVecTest, SimpleMlpForward_ ## typeName ## _ ## layerLabel ##_NoBias_CppFallback ) \
+  TEST_P(LinearAlgebraMatrixTest, SimpleMlpForward_ ## typeName ## _ ## layerLabel ##_NoBias_CppFallback ) \
   { \
-    ::testSimpleMlpForwardFloat<type>(params(), context(), false, true, inputDim, outputDim, hiddenDim, numBackboneLayers, false); \
+    ::testSimpleMlpForwardFloat<type>(params(), context(), false, true, inputDim, outputDim, hiddenDim, numBackboneLayers, false, ex::MatrixLayout::ROW_MAJOR); \
   } \
-  TEST_P(CoopVecTest, SimpleMlpForward_ ## typeName ## _ ## layerLabel ##_CppFallback ) \
+  TEST_P(LinearAlgebraMatrixTest, SimpleMlpForward_ ## typeName ## _ ## layerLabel ##_CppFallback ) \
   { \
-    ::testSimpleMlpForwardFloat<type>(params(), context(), false, true, inputDim, outputDim, hiddenDim, numBackboneLayers, true); \
+    ::testSimpleMlpForwardFloat<type>(params(), context(), false, true, inputDim, outputDim, hiddenDim, numBackboneLayers, true, ex::MatrixLayout::ROW_MAJOR); \
   }
 
 #if defined(MINIDXNN_TEST_ENABLE_FP32_TESTS) && (MINIDXNN_TEST_ENABLE_FP32_TESTS != 0)
@@ -1302,29 +1265,31 @@ ADD_SIMPLE_MLP_FORWARD_TEST(F16, half_float::half, 8x16x16x4, 8, 4, 16, 2);
 
 
 #define ADD_SIMPLE_MLP_BACKWARD_TEST(typeName, type, layerLabel, hiddenDim, numBackboneLayers, batchSize) \
-  TEST_P(CoopVecTest, SimpleMlpBackward_ ## typeName ## _ ## layerLabel ##_NoBias ) \
+  TEST_P(LinearAlgebraMatrixTest, SimpleMlpBackward_ ## typeName ## _ ## layerLabel ##_NoBias ) \
   { \
-    ::testSimpleMlpBackwardFloat<type>(params(), context(), false, false, hiddenDim, numBackboneLayers, batchSize, false); \
+    const auto layout = params().m_mlpTestUseRowMajor ? ex::MatrixLayout::ROW_MAJOR : ex::MatrixLayout::OUTER_PRODUCT_OPTIMAL; \
+    ::testSimpleMlpBackwardFloat<type>(params(), context(), false, false, hiddenDim, numBackboneLayers, batchSize, false, layout); \
   } \
-  TEST_P(CoopVecTest, SimpleMlpBackward_ ## typeName ## _ ## layerLabel ) \
+  TEST_P(LinearAlgebraMatrixTest, SimpleMlpBackward_ ## typeName ## _ ## layerLabel ) \
   { \
-    ::testSimpleMlpBackwardFloat<type>(params(), context(), false, false, hiddenDim, numBackboneLayers, batchSize, true); \
+    const auto layout = params().m_mlpTestUseRowMajor ? ex::MatrixLayout::ROW_MAJOR : ex::MatrixLayout::OUTER_PRODUCT_OPTIMAL; \
+    ::testSimpleMlpBackwardFloat<type>(params(), context(), false, false, hiddenDim, numBackboneLayers, batchSize, true, layout); \
   } \
-  TEST_P(CoopVecTest, SimpleMlpBackward_ ## typeName ## _ ## layerLabel ##_NoBias_Software ) \
+  TEST_P(LinearAlgebraMatrixTest, SimpleMlpBackward_ ## typeName ## _ ## layerLabel ##_NoBias_Software ) \
   { \
-    ::testSimpleMlpBackwardFloat<type>(params(), context(), true, false, hiddenDim, numBackboneLayers, batchSize, false); \
+    ::testSimpleMlpBackwardFloat<type>(params(), context(), true, false, hiddenDim, numBackboneLayers, batchSize, false, ex::MatrixLayout::ROW_MAJOR); \
   } \
-  TEST_P(CoopVecTest, SimpleMlpBackward_ ## typeName ## _ ## layerLabel ##_Software ) \
+  TEST_P(LinearAlgebraMatrixTest, SimpleMlpBackward_ ## typeName ## _ ## layerLabel ##_Software ) \
   { \
-    ::testSimpleMlpBackwardFloat<type>(params(), context(), true, false, hiddenDim, numBackboneLayers, batchSize, true); \
+    ::testSimpleMlpBackwardFloat<type>(params(), context(), true, false, hiddenDim, numBackboneLayers, batchSize, true, ex::MatrixLayout::ROW_MAJOR); \
   } \
-  TEST_P(CoopVecTest, SimpleMlpBackward_ ## typeName ## _ ## layerLabel ##_NoBias_CppFallback ) \
+  TEST_P(LinearAlgebraMatrixTest, SimpleMlpBackward_ ## typeName ## _ ## layerLabel ##_NoBias_CppFallback ) \
   { \
-    ::testSimpleMlpBackwardFloat<type>(params(), context(), false, true, hiddenDim, numBackboneLayers, batchSize, false); \
+    ::testSimpleMlpBackwardFloat<type>(params(), context(), false, true, hiddenDim, numBackboneLayers, batchSize, false, ex::MatrixLayout::ROW_MAJOR); \
   } \
-  TEST_P(CoopVecTest, SimpleMlpBackward_ ## typeName ## _ ## layerLabel ##_CppFallback ) \
+  TEST_P(LinearAlgebraMatrixTest, SimpleMlpBackward_ ## typeName ## _ ## layerLabel ##_CppFallback ) \
   { \
-    ::testSimpleMlpBackwardFloat<type>(params(), context(), false, true, hiddenDim, numBackboneLayers, batchSize, true); \
+    ::testSimpleMlpBackwardFloat<type>(params(), context(), false, true, hiddenDim, numBackboneLayers, batchSize, true, ex::MatrixLayout::ROW_MAJOR); \
   }
 
 #if defined(MINIDXNN_TEST_ENABLE_FP32_TESTS) && (MINIDXNN_TEST_ENABLE_FP32_TESTS != 0)
@@ -1343,7 +1308,179 @@ ADD_SIMPLE_MLP_BACKWARD_TEST(F16, half_float::half, 2x4_batch10, 8, 0, 10);
 ADD_SIMPLE_MLP_BACKWARD_TEST(F16, half_float::half, 2x8x8x4_batch10, 8, 2, 10);
 ADD_SIMPLE_MLP_BACKWARD_TEST(F16, half_float::half, 2x6x6x6x4_batch10, 6, 3, 10);
 
-INSTANTIATE_TEST_SUITE_P(CoopVecTest, CoopVecTest, testing::Values(::g_testParams));
+// ============================================================================
+// LinAlg Matrix Feature Support Tests
+// ============================================================================
+
+// D3D12_LINEAR_ALGEBRA_DATATYPE values
+namespace LinAlgDataType {
+  constexpr uint32_t kSINT8 = 18;
+  constexpr uint32_t kUINT8 = 19;
+  constexpr uint32_t kSINT32 = 4;
+  constexpr uint32_t kFLOAT16 = 7;
+  constexpr uint32_t kFLOAT32 = 8;
+  constexpr uint32_t kFLOAT8_E4M3FN = 20;
+  constexpr uint32_t kFLOAT8_E5M2 = 21;
+}
+
+TEST_P(LinearAlgebraMatrixTest, CheckFeatureSupport_LinearAlgebraTier)
+{
+  const uint32_t tier = gfxGetLinearAlgebraTier(context());
+  const std::string tierName = gfxGetLinearAlgebraTierName(context());
+  std::cout << std::format("[LinAlg] Linear Algebra Tier: {} (0x{:x})\n", tierName, tier);
+  EXPECT_TRUE(true) << "CheckFeatureSupport query completed";
+}
+
+TEST_P(LinearAlgebraMatrixTest, CheckFeatureSupport_MatrixMultiply)
+{
+  using namespace LinAlgDataType;
+  const uint32_t tier = gfxGetLinearAlgebraTier(context());
+  if (tier == 0) {
+    GTEST_SKIP() << "Linear algebra not supported on this device";
+  }
+
+  struct MulTestCase {
+    const char* name;
+    uint32_t vecType;
+    uint32_t matType;
+    uint32_t resType;
+  };
+
+  const MulTestCase testCases[] = {
+    {"(Sint8, Sint8, Sint32)",       kSINT8,    kSINT8,        kSINT32},
+    {"(Sint32, Sint8, Sint32)",      kSINT32,   kSINT8,        kSINT32},
+    {"(Uint8, Uint8, Sint32)",       kUINT8,    kUINT8,        kSINT32},
+    {"(Sint32, Uint8, Sint32)",      kSINT32,   kUINT8,        kSINT32},
+    {"(Fp16, Fp16, Fp16)",           kFLOAT16,  kFLOAT16,      kFLOAT16},
+    {"(Fp32, Fp32, Fp32)",           kFLOAT32,  kFLOAT32,      kFLOAT32},
+    {"(Fp16, Fp8_E4M3, Fp16)",       kFLOAT16,  kFLOAT8_E4M3FN, kFLOAT16},
+    {"(Fp16, Fp8_E5M2, Fp16)",       kFLOAT16,  kFLOAT8_E5M2,  kFLOAT16},
+  };
+
+  std::cout << "\n[LinAlg] === Matrix Multiplication Support ===" << '\n';
+  std::cout << std::left;
+  std::cout << "  " << std::setw(28) << "Combination"
+            << std::setw(12) << "Supported"
+            << std::setw(12) << "HW Accel"
+            << "Transpose" << '\n';
+  std::cout << "  " << std::string(52, '-') << '\n';
+
+  for (const auto& tc : testCases) {
+    auto result = gfxCheckMatrixMultiplySupport(context(), tc.vecType, tc.matType, tc.resType);
+    std::cout << "  " << std::setw(28) << tc.name
+              << std::setw(12) << (result.supported ? "YES" : "no")
+              << std::setw(12) << (result.hardwareAccelerated ? "YES" : "no")
+              << (result.transposeSupported ? "YES" : "no") << '\n';
+  }
+}
+
+TEST_P(LinearAlgebraMatrixTest, CheckFeatureSupport_MatrixMultiplyAdd)
+{
+  using namespace LinAlgDataType;
+  const uint32_t tier = gfxGetLinearAlgebraTier(context());
+  if (tier == 0) {
+    GTEST_SKIP() << "Linear algebra not supported on this device";
+  }
+
+  struct MulAddTestCase {
+    const char* name;
+    uint32_t vecType;
+    uint32_t matType;
+    uint32_t biasType;
+    uint32_t resType;
+  };
+
+  const MulAddTestCase testCases[] = {
+    {"(Fp16, Fp16, Fp16, Fp16)",         kFLOAT16,  kFLOAT16,      kFLOAT16,  kFLOAT16},
+    {"(Fp32, Fp32, Fp32, Fp32)",         kFLOAT32,  kFLOAT32,      kFLOAT32,  kFLOAT32},
+    {"(Fp16, Fp8_E4M3, Fp16, Fp16)",     kFLOAT16,  kFLOAT8_E4M3FN, kFLOAT16,  kFLOAT16},
+    {"(Fp16, Fp8_E5M2, Fp16, Fp16)",     kFLOAT16,  kFLOAT8_E5M2,  kFLOAT16,  kFLOAT16},
+  };
+
+  std::cout << "\n[LinAlg] === Matrix Multiplication + Add Support ===" << '\n';
+  std::cout << std::left;
+  std::cout << "  " << std::setw(32) << "Combination"
+            << std::setw(12) << "Supported"
+            << std::setw(12) << "HW Accel"
+            << "Transpose" << '\n';
+  std::cout << "  " << std::string(56, '-') << '\n';
+
+  for (const auto& tc : testCases) {
+    auto result = gfxCheckMatrixMultiplyAddSupport(context(), tc.vecType, tc.matType, tc.biasType, tc.resType);
+    std::cout << "  " << std::setw(32) << tc.name
+              << std::setw(12) << (result.supported ? "YES" : "no")
+              << std::setw(12) << (result.hardwareAccelerated ? "YES" : "no")
+              << (result.transposeSupported ? "YES" : "no") << '\n';
+  }
+}
+
+TEST_P(LinearAlgebraMatrixTest, CheckFeatureSupport_OuterProduct)
+{
+  using namespace LinAlgDataType;
+  const uint32_t tier = gfxGetLinearAlgebraTier(context());
+  if (tier == 0) {
+    GTEST_SKIP() << "Linear algebra not supported on this device";
+  }
+
+  struct OuterProductTestCase {
+    const char* name;
+    uint32_t inputType;
+    uint32_t resultType;
+  };
+
+  const OuterProductTestCase testCases[] = {
+    {"(Fp16, Fp16)", kFLOAT16, kFLOAT16},
+    {"(Fp16, Fp32)", kFLOAT16, kFLOAT32},
+    {"(Fp32, Fp32)", kFLOAT32, kFLOAT32},
+  };
+
+  std::cout << "\n[LinAlg] === Outer Product Support ===" << '\n';
+  std::cout << std::left;
+  std::cout << "  " << std::setw(20) << "Combination"
+            << "Supported" << '\n';
+  std::cout << "  " << std::string(29, '-') << '\n';
+
+  for (const auto& tc : testCases) {
+    auto result = gfxCheckMatrixOuterProductSupport(context(), tc.inputType, tc.resultType);
+    std::cout << "  " << std::setw(20) << tc.name
+              << (result.supported ? "YES" : "no") << '\n';
+  }
+}
+
+TEST_P(LinearAlgebraMatrixTest, CheckFeatureSupport_AtomicAccumulation)
+{
+  using namespace LinAlgDataType;
+  const uint32_t tier = gfxGetLinearAlgebraTier(context());
+  if (tier == 0) {
+    GTEST_SKIP() << "Linear algebra not supported on this device";
+  }
+
+  struct AtomicTestCase {
+    const char* name;
+    uint32_t componentType;
+  };
+
+  const AtomicTestCase testCases[] = {
+    {"Fp16",  kFLOAT16},
+    {"Fp32",  kFLOAT32},
+  };
+
+  std::cout << "\n[LinAlg] === Atomic Accumulation Support ===" << '\n';
+  std::cout << std::left;
+  std::cout << "  " << std::setw(12) << "Type"
+            << std::setw(24) << "RWByteAddressBuffer"
+            << "GroupShared" << '\n';
+  std::cout << "  " << std::string(47, '-') << '\n';
+
+  for (const auto& tc : testCases) {
+    auto result = gfxCheckMatrixAtomicAccumulationSupport(context(), tc.componentType);
+    std::cout << "  " << std::setw(12) << tc.name
+              << std::setw(24) << (result.rwByteAddressBufferSupported ? "YES" : "no")
+              << (result.groupSharedSupported ? "YES" : "no") << '\n';
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(LinearAlgebraMatrixTest, LinearAlgebraMatrixTest, testing::Values(::g_testParams));
 #endif // !MINIDXNN_CPP_FALLBACK_ONLY
 
 // ============================================================================
@@ -1366,39 +1503,71 @@ TEST_P(CppFallbackTest, Forward_F32_Identity_Sigmoid)
 // ---- Linear algebra tests ----
 #ifndef MINIDXNN_CPP_FALLBACK_ONLY
 #define ADD_MATRIX_MUL_FALLBACK_TEST(typeName, type, inputDim, outputDim) \
-  TEST_P(CppFallbackTest, MatrixMul_ ## typeName ## _ ## inputDim ## x ## outputDim) \
+  TEST_P(CppFallbackTest, MatrixMul_ ## typeName ## _ ## inputDim ## x ## outputDim ## _RowMajor) \
   { \
-    ::testLinearAlgebraMul<type, inputDim, outputDim, false, false>(params(), context(), false, true); \
+    ::testLinearAlgebraMul<type, inputDim, outputDim, false, false>(params(), context(), false, true, ex::MatrixLayout::ROW_MAJOR); \
   } \
-  TEST_P(CppFallbackTest, MatrixMulAdd_ ## typeName ## _ ## inputDim ## x ## outputDim) \
+  TEST_P(CppFallbackTest, MatrixMulAdd_ ## typeName ## _ ## inputDim ## x ## outputDim ## _RowMajor) \
   { \
-    ::testLinearAlgebraMul<type, inputDim, outputDim, false, true>(params(), context(), false, true); \
+    ::testLinearAlgebraMul<type, inputDim, outputDim, false, true>(params(), context(), false, true, ex::MatrixLayout::ROW_MAJOR); \
   } \
-  TEST_P(CppFallbackTest, MatrixMul_ ## typeName ## _ ## inputDim ## x ## outputDim ## _Transposed) \
+  TEST_P(CppFallbackTest, MatrixMul_ ## typeName ## _ ## inputDim ## x ## outputDim ## _ColumnMajor) \
   { \
-    ::testLinearAlgebraMul<type, inputDim, outputDim, true, false>(params(), context(), false, true); \
+    ::testLinearAlgebraMul<type, inputDim, outputDim, false, false>(params(), context(), false, true, ex::MatrixLayout::COLUMN_MAJOR); \
   } \
-  TEST_P(CppFallbackTest, MatrixMulAdd_ ## typeName ## _ ## inputDim ## x ## outputDim ## _Transposed) \
+  TEST_P(CppFallbackTest, MatrixMulAdd_ ## typeName ## _ ## inputDim ## x ## outputDim ## _ColumnMajor) \
   { \
-    ::testLinearAlgebraMul<type, inputDim, outputDim, true, true>(params(), context(), false, true); \
+    ::testLinearAlgebraMul<type, inputDim, outputDim, false, true>(params(), context(), false, true, ex::MatrixLayout::COLUMN_MAJOR); \
+  } \
+  TEST_P(CppFallbackTest, MatrixMul_ ## typeName ## _ ## inputDim ## x ## outputDim ## _Transposed_RowMajor) \
+  { \
+    ::testLinearAlgebraMul<type, inputDim, outputDim, true, false>(params(), context(), false, true, ex::MatrixLayout::ROW_MAJOR); \
+  } \
+  TEST_P(CppFallbackTest, MatrixMulAdd_ ## typeName ## _ ## inputDim ## x ## outputDim ## _Transposed_RowMajor) \
+  { \
+    ::testLinearAlgebraMul<type, inputDim, outputDim, true, true>(params(), context(), false, true, ex::MatrixLayout::ROW_MAJOR); \
+  } \
+  TEST_P(CppFallbackTest, MatrixMul_ ## typeName ## _ ## inputDim ## x ## outputDim ## _Transposed_ColumnMajor) \
+  { \
+    ::testLinearAlgebraMul<type, inputDim, outputDim, true, false>(params(), context(), false, true, ex::MatrixLayout::COLUMN_MAJOR); \
+  } \
+  TEST_P(CppFallbackTest, MatrixMulAdd_ ## typeName ## _ ## inputDim ## x ## outputDim ## _Transposed_ColumnMajor) \
+  { \
+    ::testLinearAlgebraMul<type, inputDim, outputDim, true, true>(params(), context(), false, true, ex::MatrixLayout::COLUMN_MAJOR); \
   }
 #else
 #define ADD_MATRIX_MUL_FALLBACK_TEST(typeName, type, inputDim, outputDim) \
-  TEST_P(CppFallbackTest, MatrixMul_ ## typeName ## _ ## inputDim ## x ## outputDim) \
+  TEST_P(CppFallbackTest, MatrixMul_ ## typeName ## _ ## inputDim ## x ## outputDim ## _RowMajor) \
   { \
-    ::testLinearAlgebraMul<type, inputDim, outputDim, false, false>(params()); \
+    ::testLinearAlgebraMul<type, inputDim, outputDim, false, false>(params(), ex::MatrixLayout::ROW_MAJOR); \
   } \
-  TEST_P(CppFallbackTest, MatrixMulAdd_ ## typeName ## _ ## inputDim ## x ## outputDim) \
+  TEST_P(CppFallbackTest, MatrixMulAdd_ ## typeName ## _ ## inputDim ## x ## outputDim ## _RowMajor) \
   { \
-    ::testLinearAlgebraMul<type, inputDim, outputDim, false, true>(params()); \
+    ::testLinearAlgebraMul<type, inputDim, outputDim, false, true>(params(), ex::MatrixLayout::ROW_MAJOR); \
   } \
-  TEST_P(CppFallbackTest, MatrixMul_ ## typeName ## _ ## inputDim ## x ## outputDim ## _Transposed) \
+  TEST_P(CppFallbackTest, MatrixMul_ ## typeName ## _ ## inputDim ## x ## outputDim ## _ColumnMajor) \
   { \
-    ::testLinearAlgebraMul<type, inputDim, outputDim, true, false>(params()); \
+    ::testLinearAlgebraMul<type, inputDim, outputDim, false, false>(params(), ex::MatrixLayout::COLUMN_MAJOR); \
   } \
-  TEST_P(CppFallbackTest, MatrixMulAdd_ ## typeName ## _ ## inputDim ## x ## outputDim ## _Transposed) \
+  TEST_P(CppFallbackTest, MatrixMulAdd_ ## typeName ## _ ## inputDim ## x ## outputDim ## _ColumnMajor) \
   { \
-    ::testLinearAlgebraMul<type, inputDim, outputDim, true, true>(params()); \
+    ::testLinearAlgebraMul<type, inputDim, outputDim, false, true>(params(), ex::MatrixLayout::COLUMN_MAJOR); \
+  } \
+  TEST_P(CppFallbackTest, MatrixMul_ ## typeName ## _ ## inputDim ## x ## outputDim ## _Transposed_RowMajor) \
+  { \
+    ::testLinearAlgebraMul<type, inputDim, outputDim, true, false>(params(), ex::MatrixLayout::ROW_MAJOR); \
+  } \
+  TEST_P(CppFallbackTest, MatrixMulAdd_ ## typeName ## _ ## inputDim ## x ## outputDim ## _Transposed_RowMajor) \
+  { \
+    ::testLinearAlgebraMul<type, inputDim, outputDim, true, true>(params(), ex::MatrixLayout::ROW_MAJOR); \
+  } \
+  TEST_P(CppFallbackTest, MatrixMul_ ## typeName ## _ ## inputDim ## x ## outputDim ## _Transposed_ColumnMajor) \
+  { \
+    ::testLinearAlgebraMul<type, inputDim, outputDim, true, false>(params(), ex::MatrixLayout::COLUMN_MAJOR); \
+  } \
+  TEST_P(CppFallbackTest, MatrixMulAdd_ ## typeName ## _ ## inputDim ## x ## outputDim ## _Transposed_ColumnMajor) \
+  { \
+    ::testLinearAlgebraMul<type, inputDim, outputDim, true, true>(params(), ex::MatrixLayout::COLUMN_MAJOR); \
   }
 #endif // !MINIDXNN_CPP_FALLBACK_ONLY
 
@@ -1421,12 +1590,28 @@ TEST_P(CppFallbackTest, VectorAcc_F16)
   ::testVectorAcc<half_float::half>(params());
 #endif
 }
+TEST_P(CppFallbackTest, VectorAcc_F16_Software)
+{
+#ifndef MINIDXNN_CPP_FALLBACK_ONLY
+  ::testVectorAcc<half_float::half>(params(), context(), true, true);
+#else
+  ::testVectorAcc<half_float::half>(params());
+#endif
+}
 
 #if defined(MINIDXNN_TEST_ENABLE_FP32_TESTS) && (MINIDXNN_TEST_ENABLE_FP32_TESTS != 0)
 TEST_P(CppFallbackTest, VectorAcc_F32)
 {
 #ifndef MINIDXNN_CPP_FALLBACK_ONLY
   ::testVectorAcc<float>(params(), context(), false, true);
+#else
+  ::testVectorAcc<float>(params());
+#endif
+}
+TEST_P(CppFallbackTest, VectorAcc_F32_Software)
+{
+#ifndef MINIDXNN_CPP_FALLBACK_ONLY
+  ::testVectorAcc<float>(params(), context(), true, true);
 #else
   ::testVectorAcc<float>(params());
 #endif
@@ -1453,25 +1638,94 @@ TEST_P(CppFallbackTest, AtomicFetchAdd_F32)
 #endif
 }
 #endif // MINIDXNN_TEST_ENABLE_FP32_TESTS
+
+// ---- OuterProductAcc tests ----
+TEST_P(CppFallbackTest, OuterProductAcc_F16_4x4)
+{
+#ifndef MINIDXNN_CPP_FALLBACK_ONLY
+  ::testOuterProductAcc<half_float::half, 4, 4>(params(), context(), false, true, ex::MatrixLayout::ROW_MAJOR);
+#else
+  ::testOuterProductAcc<half_float::half, 4, 4>(params(), ex::MatrixLayout::ROW_MAJOR);
+#endif
+}
+TEST_P(CppFallbackTest, OuterProductAcc_F16_4x4_Software)
+{
+#ifndef MINIDXNN_CPP_FALLBACK_ONLY
+  ::testOuterProductAcc<half_float::half, 4, 4>(params(), context(), true, true, ex::MatrixLayout::ROW_MAJOR);
+#else
+  ::testOuterProductAcc<half_float::half, 4, 4>(params(), ex::MatrixLayout::ROW_MAJOR);
+#endif
+}
+TEST_P(CppFallbackTest, OuterProductAcc_F16_8x4)
+{
+#ifndef MINIDXNN_CPP_FALLBACK_ONLY
+  ::testOuterProductAcc<half_float::half, 8, 4>(params(), context(), false, true, ex::MatrixLayout::ROW_MAJOR);
+#else
+  ::testOuterProductAcc<half_float::half, 8, 4>(params(), ex::MatrixLayout::ROW_MAJOR);
+#endif
+}
+TEST_P(CppFallbackTest, OuterProductAcc_F16_8x4_Software)
+{
+#ifndef MINIDXNN_CPP_FALLBACK_ONLY
+  ::testOuterProductAcc<half_float::half, 8, 4>(params(), context(), true, true, ex::MatrixLayout::ROW_MAJOR);
+#else
+  ::testOuterProductAcc<half_float::half, 8, 4>(params(), ex::MatrixLayout::ROW_MAJOR);
+#endif
+}
+
+#if defined(MINIDXNN_TEST_ENABLE_FP32_TESTS) && (MINIDXNN_TEST_ENABLE_FP32_TESTS != 0)
+TEST_P(CppFallbackTest, OuterProductAcc_F32_4x4)
+{
+#ifndef MINIDXNN_CPP_FALLBACK_ONLY
+  ::testOuterProductAcc<float, 4, 4>(params(), context(), false, true, ex::MatrixLayout::ROW_MAJOR);
+#else
+  ::testOuterProductAcc<float, 4, 4>(params(), ex::MatrixLayout::ROW_MAJOR);
+#endif
+}
+TEST_P(CppFallbackTest, OuterProductAcc_F32_4x4_Software)
+{
+#ifndef MINIDXNN_CPP_FALLBACK_ONLY
+  ::testOuterProductAcc<float, 4, 4>(params(), context(), true, true, ex::MatrixLayout::ROW_MAJOR);
+#else
+  ::testOuterProductAcc<float, 4, 4>(params(), ex::MatrixLayout::ROW_MAJOR);
+#endif
+}
+TEST_P(CppFallbackTest, OuterProductAcc_F32_8x4)
+{
+#ifndef MINIDXNN_CPP_FALLBACK_ONLY
+  ::testOuterProductAcc<float, 8, 4>(params(), context(), false, true, ex::MatrixLayout::ROW_MAJOR);
+#else
+  ::testOuterProductAcc<float, 8, 4>(params(), ex::MatrixLayout::ROW_MAJOR);
+#endif
+}
+TEST_P(CppFallbackTest, OuterProductAcc_F32_8x4_Software)
+{
+#ifndef MINIDXNN_CPP_FALLBACK_ONLY
+  ::testOuterProductAcc<float, 8, 4>(params(), context(), true, true, ex::MatrixLayout::ROW_MAJOR);
+#else
+  ::testOuterProductAcc<float, 8, 4>(params(), ex::MatrixLayout::ROW_MAJOR);
+#endif
+}
+#endif // MINIDXNN_TEST_ENABLE_FP32_TESTS
 #ifndef MINIDXNN_CPP_FALLBACK_ONLY
 #define ADD_SIMPLE_MLP_FORWARD_FALLBACK_TEST(typeName, type, layerLabel, inputDim, outputDim, hiddenDim, numBackboneLayers) \
   TEST_P(CppFallbackTest, SimpleMlpForward_ ## typeName ## _ ## layerLabel ## _NoBias) \
   { \
-    ::testSimpleMlpForwardFloat<type>(params(), context(), false, true, inputDim, outputDim, hiddenDim, numBackboneLayers, false); \
+    ::testSimpleMlpForwardFloat<type>(params(), context(), false, true, inputDim, outputDim, hiddenDim, numBackboneLayers, false, ex::MatrixLayout::ROW_MAJOR); \
   } \
   TEST_P(CppFallbackTest, SimpleMlpForward_ ## typeName ## _ ## layerLabel) \
   { \
-    ::testSimpleMlpForwardFloat<type>(params(), context(), false, true, inputDim, outputDim, hiddenDim, numBackboneLayers, true); \
+    ::testSimpleMlpForwardFloat<type>(params(), context(), false, true, inputDim, outputDim, hiddenDim, numBackboneLayers, true, ex::MatrixLayout::ROW_MAJOR); \
   }
 #else
 #define ADD_SIMPLE_MLP_FORWARD_FALLBACK_TEST(typeName, type, layerLabel, inputDim, outputDim, hiddenDim, numBackboneLayers) \
   TEST_P(CppFallbackTest, SimpleMlpForward_ ## typeName ## _ ## layerLabel ## _NoBias) \
   { \
-    ::testSimpleMlpForwardFloat<type>(params(), inputDim, outputDim, hiddenDim, numBackboneLayers, false); \
+    ::testSimpleMlpForwardFloat<type>(params(), inputDim, outputDim, hiddenDim, numBackboneLayers, false, ex::MatrixLayout::ROW_MAJOR); \
   } \
   TEST_P(CppFallbackTest, SimpleMlpForward_ ## typeName ## _ ## layerLabel) \
   { \
-    ::testSimpleMlpForwardFloat<type>(params(), inputDim, outputDim, hiddenDim, numBackboneLayers, true); \
+    ::testSimpleMlpForwardFloat<type>(params(), inputDim, outputDim, hiddenDim, numBackboneLayers, true, ex::MatrixLayout::ROW_MAJOR); \
   }
 #endif // !MINIDXNN_CPP_FALLBACK_ONLY
 
@@ -1492,21 +1746,21 @@ ADD_SIMPLE_MLP_FORWARD_FALLBACK_TEST(F32, float, 8x16x16x4, 8, 4, 16, 2)
 #define ADD_SIMPLE_MLP_BACKWARD_FALLBACK_TEST(typeName, type, layerLabel, hiddenDim, numBackboneLayers, batchSize) \
   TEST_P(CppFallbackTest, SimpleMlpBackward_ ## typeName ## _ ## layerLabel ## _NoBias) \
   { \
-    ::testSimpleMlpBackwardFloat<type>(params(), context(), false, true, hiddenDim, numBackboneLayers, batchSize, false); \
+    ::testSimpleMlpBackwardFloat<type>(params(), context(), false, true, hiddenDim, numBackboneLayers, batchSize, false, ex::MatrixLayout::ROW_MAJOR); \
   } \
   TEST_P(CppFallbackTest, SimpleMlpBackward_ ## typeName ## _ ## layerLabel) \
   { \
-    ::testSimpleMlpBackwardFloat<type>(params(), context(), false, true, hiddenDim, numBackboneLayers, batchSize, true); \
+    ::testSimpleMlpBackwardFloat<type>(params(), context(), false, true, hiddenDim, numBackboneLayers, batchSize, true, ex::MatrixLayout::ROW_MAJOR); \
   }
 #else
 #define ADD_SIMPLE_MLP_BACKWARD_FALLBACK_TEST(typeName, type, layerLabel, hiddenDim, numBackboneLayers, batchSize) \
   TEST_P(CppFallbackTest, SimpleMlpBackward_ ## typeName ## _ ## layerLabel ## _NoBias) \
   { \
-    ::testSimpleMlpBackwardFloat<type>(params(), hiddenDim, numBackboneLayers, batchSize, false); \
+    ::testSimpleMlpBackwardFloat<type>(params(), hiddenDim, numBackboneLayers, batchSize, false, ex::MatrixLayout::ROW_MAJOR); \
   } \
   TEST_P(CppFallbackTest, SimpleMlpBackward_ ## typeName ## _ ## layerLabel) \
   { \
-    ::testSimpleMlpBackwardFloat<type>(params(), hiddenDim, numBackboneLayers, batchSize, true); \
+    ::testSimpleMlpBackwardFloat<type>(params(), hiddenDim, numBackboneLayers, batchSize, true, ex::MatrixLayout::ROW_MAJOR); \
   }
 #endif // !MINIDXNN_CPP_FALLBACK_ONLY
 
@@ -1568,15 +1822,9 @@ auto createCommandLineParser(test::TestParameters& params) -> std::unique_ptr<CL
         ->default_val(params.m_enableDebugMode);
   }
   {
-    const std::string desc = "Weight matrix layout: 0=ROW_MAJOR, 1=COLUMN_MAJOR";
-    parser->add_option("--weight-matrix-layout", params.m_weightMatrixLayout, desc)
-        ->default_val(ex::MatrixLayout::ROW_MAJOR)
-        ->transform(CLI::CheckedTransformer(std::map<std::string, ex::MatrixLayout>{
-            {"row-major", ex::MatrixLayout::ROW_MAJOR},
-            {"column-major", ex::MatrixLayout::COLUMN_MAJOR},
-            {"0", ex::MatrixLayout::ROW_MAJOR},
-            {"1", ex::MatrixLayout::COLUMN_MAJOR}
-        }, CLI::ignore_case));
+    const std::string desc = "Use ROW_MAJOR layout instead of MUL_OPTIMAL/OUTER_PRODUCT_OPTIMAL in MLP tests";
+    parser->add_flag("--mlp-test-use-row-major", params.m_mlpTestUseRowMajor, desc)
+        ->default_val(params.m_mlpTestUseRowMajor);
   }
 
   return parser;

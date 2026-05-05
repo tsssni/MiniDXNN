@@ -42,8 +42,8 @@ int OptimizerTimestep;
 template <typename Type>
 void training(const uint threadId)
 {
-  const dx::linalg::DataType elemType = mininn::impl::TypeTraits<Type>::COMPONENT_TYPE;
-  const dx::linalg::MatrixLayout layout = (dx::linalg::MatrixLayout)MINIDXNN_WEIGHT_MATRIX_LAYOUT;
+  const dx::linalg::ComponentEnum elemType = mininn::impl::TypeTraits<Type>::COMPONENT_TYPE;
+  const dx::linalg::MatrixLayoutEnum layout = (dx::linalg::MatrixLayoutEnum)MINIDXNN_WEIGHT_MATRIX_LAYOUT;
   using ActivationHiddenT = mininn:: MINIDXNN_ACTIVATION_HIDDEN_TYPE;
   using ActivationLastT = mininn:: MINIDXNN_ACTIVATION_LAST_TYPE;
 
@@ -65,8 +65,8 @@ void sgdStep(const uint threadId)
 {
   const uint wTotal = MINIDXNN_WEIGHT_BUFFER_SIZE / (uint)sizeof(Type);
   const uint bTotal = MINIDXNN_BIAS_BUFFER_SIZE / (uint)sizeof(Type);
-  optimizer::sgdElement<Type>(RWWeightBuffer, WeightGradBuffer, (float)MINIDXNN_LEARNING_RATE, threadId, wTotal);
-  optimizer::sgdElement<Type>(RWBiasBuffer, BiasGradBuffer, (float)MINIDXNN_LEARNING_RATE, threadId, bTotal);
+  optimizer::sgdElement<Type>(RWWeightBuffer, WeightGradBuffer, (float)MINIDXNN_LEARNING_RATE, 1.0f, threadId, wTotal);
+  optimizer::sgdElement<Type>(RWBiasBuffer, BiasGradBuffer, (float)MINIDXNN_LEARNING_RATE, 1.0f, threadId, bTotal);
 }
 
 template <typename Type>
@@ -80,12 +80,12 @@ void adamStep(const uint threadId)
       WeightFirstMoment, WeightSecondMoment,
       (float)MINIDXNN_LEARNING_RATE,
       MINIDXNN_OPTIMIZER_BETA1, MINIDXNN_OPTIMIZER_BETA2, MINIDXNN_OPTIMIZER_EPSILON,
-      bc1, bc2, threadId, wTotal);
+      bc1, bc2, 1.0f, threadId, wTotal);
   optimizer::adamElement<Type>(RWBiasBuffer, BiasGradBuffer,
       BiasFirstMoment, BiasSecondMoment,
       (float)MINIDXNN_LEARNING_RATE,
       MINIDXNN_OPTIMIZER_BETA1, MINIDXNN_OPTIMIZER_BETA2, MINIDXNN_OPTIMIZER_EPSILON,
-      bc1, bc2, threadId, bTotal);
+      bc1, bc2, 1.0f, threadId, bTotal);
 }
 
 template <typename Type>
@@ -98,13 +98,13 @@ void lionStep(const uint threadId)
       (float)MINIDXNN_LEARNING_RATE,
       MINIDXNN_OPTIMIZER_BETA1, MINIDXNN_OPTIMIZER_BETA2,
       MINIDXNN_OPTIMIZER_WEIGHT_DECAY,
-      threadId, wTotal);
+      1.0f, threadId, wTotal);
   optimizer::lionElement<Type>(RWBiasBuffer, BiasGradBuffer,
       BiasFirstMoment,
       (float)MINIDXNN_LEARNING_RATE,
       MINIDXNN_OPTIMIZER_BETA1, MINIDXNN_OPTIMIZER_BETA2,
       MINIDXNN_OPTIMIZER_WEIGHT_DECAY,
-      threadId, bTotal);
+      1.0f, threadId, bTotal);
 }
 
 // ============================================================================
@@ -114,8 +114,8 @@ void lionStep(const uint threadId)
 template <typename Type>
 void inference(const uint threadId)
 {
-  const dx::linalg::DataType elemType = mininn::impl::TypeTraits<Type>::COMPONENT_TYPE;
-  const dx::linalg::MatrixLayout layout = (dx::linalg::MatrixLayout)MINIDXNN_WEIGHT_MATRIX_LAYOUT;
+  const dx::linalg::ComponentEnum elemType = mininn::impl::TypeTraits<Type>::COMPONENT_TYPE;
+  const dx::linalg::MatrixLayoutEnum layout = (dx::linalg::MatrixLayoutEnum)MINIDXNN_WEIGHT_MATRIX_LAYOUT;
   using ActivationHiddenT = mininn:: MINIDXNN_ACTIVATION_HIDDEN_TYPE;
   using ActivationLastT = mininn:: MINIDXNN_ACTIVATION_LAST_TYPE;
 

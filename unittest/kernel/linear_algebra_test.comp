@@ -17,11 +17,11 @@ ByteAddressBuffer BiasBuffer;
 template <typename Type>
 void testLinearAlgebraMul(const uint threadId)
 {
-  const dx::linalg::DataType elemType = mininn::impl::TypeTraits<Type>::COMPONENT_TYPE;
+  const dx::linalg::ComponentEnum elemType = mininn::impl::TypeTraits<Type>::COMPONENT_TYPE;
   const uint numTasks = MINIDXNN_NUM_TASKS;
   const int rowSize = MINIDXNN_ROW_SIZE;
   const int columnSize = MINIDXNN_COLUMN_SIZE;
-  const dx::linalg::MatrixLayout weightMatrixLayout = (dx::linalg::MatrixLayout)MINIDXNN_WEIGHT_MATRIX_LAYOUT;
+  const dx::linalg::MatrixLayoutEnum weightMatrixLayout = (dx::linalg::MatrixLayoutEnum)MINIDXNN_WEIGHT_MATRIX_LAYOUT;
   const bool isWeightMatrixTransposed = MINIDXNN_WEIGHT_MATRIX_IS_TRANSPOSED != 0;
   const uint matrixVectorStrideAlignment = MINIDXNN_MATRIX_VECTOR_STRIDE_ALIGNMENT;
   using InputVecT = vector<Type, columnSize>;
@@ -45,12 +45,12 @@ void testLinearAlgebraMul(const uint threadId)
   using LinAlg = mininn::impl::LinearAlgebra;
 #if defined(MINIDXNN_HAS_BIAS) && (MINIDXNN_HAS_BIAS != 0)
   // Create a bias reference
-  using BiasT = dx::linalg::VectorRef<elemType>;
+  using BiasT = mininn::impl::VectorRefImpl<ByteAddressBuffer, elemType>;
   BiasT bias = {BiasBuffer, 0};
 
-  output = LinAlg::mulAdd<Type>(matrix, dx::linalg::MakeInterpretedVector<elemType>(input), bias);
+  output = LinAlg::mulAdd<Type>(matrix, input, bias);
 #else // MINIDXNN_HAS_BIAS
-  output = LinAlg::mul<Type>(matrix, dx::linalg::MakeInterpretedVector<elemType>(input));
+  output = LinAlg::mul<Type>(matrix, input);
 #endif // MINIDXNN_HAS_BIAS
 
   // Store the result
@@ -60,7 +60,7 @@ void testLinearAlgebraMul(const uint threadId)
 template <typename Type>
 void testLinearAlgebraVectorAcc(const uint threadId)
 {
-  const dx::linalg::DataType elemType = mininn::impl::TypeTraits<Type>::COMPONENT_TYPE;
+  const dx::linalg::ComponentEnum elemType = mininn::impl::TypeTraits<Type>::COMPONENT_TYPE;
   const uint numTasks = MINIDXNN_NUM_TASKS;
   const int size = MINIDXNN_COLUMN_SIZE;
   using InputVecT = vector<Type, size>;
@@ -75,7 +75,7 @@ void testLinearAlgebraVectorAcc(const uint threadId)
   }
 
   // test
-  dx::linalg::RWVectorRef<elemType> output = {OutputBuffer, 0};
+  mininn::impl::RWVectorRef<elemType> output = {OutputBuffer, 0};
   mininn::impl::LinearAlgebra::vectorAcc(input, output);
 }
 

@@ -1,6 +1,6 @@
 # MLP HLSL API Reference
 
-API reference for [`include/minidxnn/hlsl/mlp.hlsl`](../include/minidxnn/hlsl/mlp.hlsl) — a header-only HLSL library for MLP forward and backward passes using DirectX 12 Cooperative Vector.
+API reference for [`include/minidxnn/hlsl/mlp.hlsl`](../include/minidxnn/hlsl/mlp.hlsl) — a header-only HLSL library for MLP forward and backward passes using DirectX 12 LinAlg Matrix.
 
 For project overview and build instructions, see the [top-level README](../README.md).
 
@@ -250,7 +250,7 @@ constexpr size_t MATRIX_STRIDE_ALIGNMENT = 16;   // matches WEIGHT_STRIDE_ALIGNM
 constexpr size_t VECTOR_ALIGNMENT        = 64;   // matches BIAS_ALIGNMENT
 ```
 
-See `example/common/gfx_utility.hpp` (`convertToMatrixBuffer`, `convertToVectorBuffer`) for the full GPU buffer packing implementation.
+See `example/common/gfx_utility.hpp` (`packAsD3D12MatrixBuffer`, `packAsD3D12VectorBuffer`) for the full GPU buffer packing implementation.
 
 ---
 
@@ -259,7 +259,7 @@ See `example/common/gfx_utility.hpp` (`convertToMatrixBuffer`, `convertToVectorB
 | Define | Effect |
 |--------|--------|
 | `MINIDXNN_NO_INCLUDE_DX_LINALG` | Skip `#include <dx/linalg.h>` (provide it yourself) |
-| `MINIDXNN_USE_SOFTWARE_LINALG_IMPL` | Use software fallback for matrix-vector ops instead of Cooperative Vector intrinsics |
+| `MINIDXNN_USE_SOFTWARE_LINALG_IMPL` | Use software fallback for matrix-vector ops instead of LinAlg Matrix intrinsics |
 
 ---
 
@@ -267,11 +267,11 @@ See `example/common/gfx_utility.hpp` (`convertToMatrixBuffer`, `convertToVectorB
 
 - [Example Code](../example) — complete working examples
 - [Unit Tests](../unittest) — test cases demonstrating API usage
-- [Cooperative Vector Spec][coop-vec-spec] — HLSL specification
-- [DirectX Blog][coop-vec-overview] — getting started with Cooperative Vector
+- [LinAlg Matrix Spec][linalg-spec] — HLSL specification
+- [D3D12 LinAlg Matrix Overview][linalg-overview] — runtime feature support
 
-[coop-vec-spec]: https://github.com/microsoft/hlsl-specs/blob/main/proposals/0029-cooperative-vector.md
-[coop-vec-overview]: https://devblogs.microsoft.com/directx/cooperative-vector/
+[linalg-spec]: https://github.com/microsoft/hlsl-specs/blob/main/proposals/0035-linalg-matrix.md
+[linalg-overview]: https://microsoft.github.io/DirectX-Specs/d3d/D3D12LinearAlgebraRuntimeFeatureSupport.html#tier-1-support
 
 ---
 

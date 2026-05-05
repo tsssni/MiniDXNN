@@ -37,7 +37,7 @@ function(setCxxCompileFlags target scope)
                  /options:strict      # Strict options checking
                  )
   set(msvc_linker_flags)
-  set(msvc_definitions)
+  set(msvc_definitions _CRT_SECURE_NO_WARNINGS)  # Suppress deprecated CRT warnings from third-party headers (stb_image)
 
   # GCC compiler flags
   set(gcc_flags)
@@ -144,6 +144,7 @@ function(setCxxWarningFlags target scope)
                        /wd4514   # unreferenced inline function removed (informational)
                        /wd4625   # copy constructor implicitly deleted (GoogleTest)
                        /wd4626   # copy assignment implicitly deleted (GoogleTest)
+                       /wd4702   # unreachable code (can be triggered by compile-time branching)
                        /wd4710   # function not inlined (compiler decision, informational)
                        /wd4711   # function selected for automatic inline expansion (informational)
                        /wd4820   # struct padding added (informational)

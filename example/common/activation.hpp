@@ -152,8 +152,8 @@ auto SigmoidActivation<T>::forward(std::span<Type> output, const std::span<Const
     using half_float::exp;
     using std::abs;
     using std::exp;
-    const auto zero = static_cast<T>(0);
-    const auto one = static_cast<T>(1);
+    const T zero = static_cast<T>(0);
+    const T one = static_cast<T>(1);
     const T e = exp(-abs(x));
     const T oneOverEPlusOne = one / (e + one);
     const T y = (zero > x) ? one - oneOverEPlusOne : oneOverEPlusOne;
@@ -171,7 +171,7 @@ auto SigmoidActivation<T>::backward(std::span<Type> output, const std::span<Cons
     using half_float::exp;
     using std::abs;
     using std::exp;
-    const auto one = static_cast<T>(1);
+    const T one = static_cast<T>(1);
     const T e = exp(-abs(x));
     const T oneOverEPlusOne = one / (e + one);
     const T derivative = (one - oneOverEPlusOne) * oneOverEPlusOne;
@@ -199,7 +199,7 @@ auto TanhActivation<T>::backward(std::span<Type> output, const std::span<ConstT>
   {
     using half_float::tanh;
     using std::tanh;
-    const auto one = static_cast<T>(1);
+    const T one = static_cast<T>(1);
     const T t = tanh(x);
     return one - t * t;
   });
@@ -223,8 +223,8 @@ auto ReluActivation<T>::backward(std::span<Type> output, const std::span<ConstT>
 {
   std::ranges::transform(input, output.begin(), [](const T x) -> T
   {
-    const auto zero = static_cast<T>(0);
-    const auto one = static_cast<T>(1);
+    const T zero = static_cast<T>(0);
+    const T one = static_cast<T>(1);
     return (x > zero) ? one : zero;
   });
 }
@@ -248,8 +248,8 @@ auto LeakyReluActivation<T>::backward(std::span<Type> output, const std::span<Co
 {
   std::ranges::transform(input, output.begin(), [this](const T x) -> T
   {
-    const auto zero = static_cast<T>(0);
-    const auto one = static_cast<T>(1);
+    const T zero = static_cast<T>(0);
+    const T one = static_cast<T>(1);
     const T derivative = (x < zero) ? NEGATIVE_SLOPE : one;
     return derivative;
   });

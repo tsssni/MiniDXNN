@@ -50,8 +50,8 @@ build/*
 !/build/.gitkeep
 
 # Runtime
-unittest/runtime/*
-!/unittest/runtime/.gitkeep
+third_party/runtime/*
+!/third_party/runtime/.gitkeep
 
 # CMake
 CMakeLists.txt.user

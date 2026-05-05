@@ -117,13 +117,14 @@ template <typename Type>
 void sgdElement(RWByteAddressBuffer params,
                 RWByteAddressBuffer grads,
                 const float learningRate,
+                const float invLossScale,
                 const uint elementIndex,
                 const uint totalElements)
 {
   if (elementIndex >= totalElements) return;
   const uint offset = elementIndex * (uint)(sizeof(Type));
   const float w = detail::loadParam<Type>(params, offset);
-  const float g = detail::loadParam<Type>(grads, offset);
+  const float g = detail::loadParam<Type>(grads, offset) * invLossScale;
   detail::storeParam<Type>(params, offset, w - learningRate * g);
 }
 
@@ -143,6 +144,7 @@ void adamElement(RWByteAddressBuffer params,
                  const float epsilon,
                  const float bc1,
                  const float bc2,
+                 const float invLossScale,
                  const uint elementIndex,
                  const uint totalElements)
 {
@@ -151,7 +153,7 @@ void adamElement(RWByteAddressBuffer params,
   const uint floatOffset = elementIndex * (uint)(sizeof(float));
 
   const float w = detail::loadParam<Type>(params, typeOffset);
-  const float g = detail::loadParam<Type>(grads, typeOffset);
+  const float g = detail::loadParam<Type>(grads, typeOffset) * invLossScale;
   float m = detail::loadMoment(firstMoment, floatOffset);
   float v = detail::loadMoment(secondMoment, floatOffset);
 
@@ -180,6 +182,7 @@ void lionElement(RWByteAddressBuffer params,
                  const float beta1,
                  const float beta2,
                  const float weightDecay,
+                 const float invLossScale,
                  const uint elementIndex,
                  const uint totalElements)
 {
@@ -188,7 +191,7 @@ void lionElement(RWByteAddressBuffer params,
   const uint floatOffset = elementIndex * (uint)(sizeof(float));
 
   const float w = detail::loadParam<Type>(params, typeOffset);
-  const float g = detail::loadParam<Type>(grads, typeOffset);
+  const float g = detail::loadParam<Type>(grads, typeOffset) * invLossScale;
   float m = detail::loadMoment(momentum, floatOffset);
 
   // When gradient is near-zero (converged), clear momentum to prevent
@@ -222,11 +225,12 @@ template <typename Type>
 void sgdUpdateAll(RWByteAddressBuffer params,
                   RWByteAddressBuffer grads,
                   const float learningRate,
+                  const float invLossScale,
                   const uint bufferSizeInBytes)
 {
   const uint totalElements = bufferSizeInBytes / static_cast<uint>(sizeof(Type));
   for (uint i = 0; i < totalElements; ++i)
-    sgdElement<Type>(params, grads, learningRate, i, totalElements);
+    sgdElement<Type>(params, grads, learningRate, invLossScale, i, totalElements);
 }
 
 template <typename Type>
@@ -240,12 +244,13 @@ void adamUpdateAll(RWByteAddressBuffer params,
                    const float epsilon,
                    const float bc1,
                    const float bc2,
+                   const float invLossScale,
                    const uint bufferSizeInBytes)
 {
   const uint totalElements = bufferSizeInBytes / static_cast<uint>(sizeof(Type));
   for (uint i = 0; i < totalElements; ++i)
     adamElement<Type>(params, grads, firstMoment, secondMoment,
-                      learningRate, beta1, beta2, epsilon, bc1, bc2, i, totalElements);
+                      learningRate, beta1, beta2, epsilon, bc1, bc2, invLossScale, i, totalElements);
 }
 
 template <typename Type>
@@ -256,11 +261,12 @@ void lionUpdateAll(RWByteAddressBuffer params,
                    const float beta1,
                    const float beta2,
                    const float weightDecay,
+                   const float invLossScale,
                    const uint bufferSizeInBytes)
 {
   const uint totalElements = bufferSizeInBytes / static_cast<uint>(sizeof(Type));
   for (uint i = 0; i < totalElements; ++i)
-    lionElement<Type>(params, grads, momentum, learningRate, beta1, beta2, weightDecay, i, totalElements);
+    lionElement<Type>(params, grads, momentum, learningRate, beta1, beta2, weightDecay, invLossScale, i, totalElements);
 }
 
 #endif // MINIDXNN_CPP_HLSL_COMPAT_HPP

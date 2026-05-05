@@ -19,10 +19,21 @@ void testAtomicFetchAdd(const uint threadId)
   if (numTasks <= threadId)
     return;
 
-  mininn::impl::atomicFetchAdd(OutputBuffer, 0 * sizeof(Type), (Type)1);
-  mininn::impl::atomicFetchAdd(OutputBuffer, 1 * sizeof(Type), (Type)2);
-  mininn::impl::atomicFetchAdd(OutputBuffer, 2 * sizeof(Type), (Type)4);
-  mininn::impl::atomicFetchAdd(OutputBuffer, 3 * sizeof(Type), (Type)8);
+  const uint numIterations = MINIDXNN_NUM_ITERATIONS;
+  for (uint iter = 0; iter < numIterations; ++iter) {
+    // Slot 0-3: constant accumulation (basic correctness)
+    mininn::impl::atomicFetchAdd(OutputBuffer, 0 * sizeof(Type), (Type)1);
+    mininn::impl::atomicFetchAdd(OutputBuffer, 1 * sizeof(Type), (Type)2);
+    mininn::impl::atomicFetchAdd(OutputBuffer, 2 * sizeof(Type), (Type)4);
+    mininn::impl::atomicFetchAdd(OutputBuffer, 3 * sizeof(Type), (Type)8);
+    // Slot 4-5: small fractional values — sensitive to float rounding/optimization bugs
+    mininn::impl::atomicFetchAdd(OutputBuffer, 4 * sizeof(Type), (Type)0.125);
+    mininn::impl::atomicFetchAdd(OutputBuffer, 5 * sizeof(Type), (Type)0.0625);
+    // Slot 6: alternating sign per thread — exposes reordering bugs where +/- collapse
+    mininn::impl::atomicFetchAdd(OutputBuffer, 6 * sizeof(Type), (threadId & 1u) ? (Type)(-1) : (Type)1);
+    // Slot 7: non-power-of-two value
+    mininn::impl::atomicFetchAdd(OutputBuffer, 7 * sizeof(Type), (Type)3);
+  }
 }
 
 [numthreads(MINIDXNN_NUM_THREADS_X, 1, 1)]

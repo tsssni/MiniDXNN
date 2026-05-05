@@ -22,8 +22,8 @@
 namespace texkernel {
 
 template <typename Type, uint NUM_LAYERS, int HIDDEN_DIM,
-          dx::linalg::DataType ELEM_TYPE,
-          dx::linalg::MatrixLayout LAYOUT,
+          dx::linalg::ComponentEnum ELEM_TYPE,
+          dx::linalg::MatrixLayoutEnum LAYOUT,
           typename ActivationHiddenT, typename ActivationLastT,
           uint W_ALIGN, uint VS_ALIGN, uint B_ALIGN,
           bool HAS_BIAS>

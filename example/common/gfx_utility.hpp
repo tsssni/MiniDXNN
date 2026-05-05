@@ -15,16 +15,16 @@
 #include <filesystem>
 #include <format>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <source_location>
 #include <span>
 #include <string_view>
-#include <tuple>
 #include <vector>
 // GFX
 #include "gfx.h"
 // Example
-#include "mlp_layer.hpp"
+#include "d3d12_format.hpp"
 #include "utility.hpp"
 
 namespace ex {
@@ -108,8 +108,7 @@ class GfxAssertTrue
   {
     if (result != kGfxResult_NoError) {
       std::cerr << std::format(messageFormat, std::forward<Args>(args)...)
-                << std::format(" in file: {} [line: {}, function={}]", m_location.file_name(), m_location.line(), m_location.function_name())
-                << std::endl;
+                << std::format(" in file: {} [line: {}, function={}]\n", m_location.file_name(), m_location.line(), m_location.function_name());
     }
   }
 
@@ -151,76 +150,206 @@ auto createGfxBuffer(GfxContext context, std::span<const Type> data, const GfxCp
   return sharedBuffer;
 }
 
-template <Arithmetic Type> inline
-auto convertToMatrixBuffer(GfxContext context,
-                           const size_t inputDim,
-                           const size_t outputDim,
-                           const std::span<const Type> data,
-                           const MatrixLayout layout,
-                           std::span<size_t> matrixStrideListOut,
-                           const size_t alignment = MATRIX_ALIGNMENT,
-                           const size_t strideAlignment = MATRIX_VECTOR_STRIDE_ALIGNMENT) -> std::shared_ptr<GfxBuffer>
-{
-  std::vector<std::span<const Type>> layerDataList;
-  layerDataList.emplace_back(data);
-  std::vector<std::tuple<size_t, size_t>> layerInfoList;
-  layerInfoList.emplace_back(inputDim, outputDim);
-  const std::vector bufferData = ex::packMatrixData<Type>(layerDataList, layerInfoList, layout, matrixStrideListOut, alignment, strideAlignment);
-  std::shared_ptr buffer = ex::createGfxBuffer<Type>(context, bufferData);
-  return buffer;
-}
+// ============================================================================
+// D3D12 format buffer creation
+// ============================================================================
 
+//! Pack matrices into a GPU buffer.
+//! For MUL_OPTIMAL/OUTER_PRODUCT_OPTIMAL layouts, matrices are first packed as ROW_MAJOR
+//! then GPU-converted to the optimal layout via gfxConvertMatrix.
+//! For ROW_MAJOR/COLUMN_MAJOR, matrices are packed directly.
+//! Each entry's m_layout is updated to reflect the effective layout on the GPU buffer.
+//! If allowRowMajorFallback is true (default: false), conversion failure silently falls back to ROW_MAJOR.
+//! If false, conversion failure returns an empty (null) buffer.
 template <Arithmetic Type> inline
-auto convertToMatrixBuffer(GfxContext context,
-                           const std::span<const MlpLayer<Type, Type>> data,
-                           const MatrixLayout layout,
-                           std::span<size_t> matrixStrideListOut,
-                           const size_t alignment = MATRIX_ALIGNMENT,
-                           const size_t strideAlignment = MATRIX_VECTOR_STRIDE_ALIGNMENT) -> std::shared_ptr<GfxBuffer>
+auto packAsD3D12MatrixBuffer(GfxContext context,
+                             std::span<D3D12MatrixInfo<Type>> infoList,
+                             const bool allowRowMajorFallback = false) -> std::shared_ptr<GfxBuffer>
 {
-  using MlpLayerT = MlpLayer<Type, Type>;
-  std::vector<std::span<const Type>> layerDataList;
-  layerDataList.reserve(data.size());
-  std::vector<std::tuple<size_t, size_t>> layerInfoList;
-  layerInfoList.reserve(data.size());
-  for (const MlpLayerT& layer : data) {
-    layerDataList.emplace_back(layer.weightData());
-    layerInfoList.emplace_back(layer.inputDimension(), layer.outputDimension());
+  if (infoList.empty())
+    return {};
+
+  const MatrixLayout requestedLayout = infoList[0].m_layout;
+
+  if (needsMatrixConversion(requestedLayout)) {
+    // Pack as ROW_MAJOR first for GPU conversion
+    for (D3D12MatrixInfo<Type>& info : infoList)
+      info.m_layout = MatrixLayout::ROW_MAJOR;
+    const std::vector bufferData = packAsD3D12Matrix<Type>(infoList);
+    std::shared_ptr buffer = createGfxBuffer<Type>(context, bufferData);
+
+    constexpr uint32_t dataType = toD3D12DataType<Type>();
+    const uint32_t d3dLayout = toD3D12MatrixLayout(requestedLayout);
+
+    // Query destination sizes for all matrices
+    std::vector<uint32_t> destSizes(infoList.size());
+    size_t totalDestSize = 0;
+    for (size_t i = 0; i < infoList.size(); ++i) {
+      const uint32_t rowSize = static_cast<uint32_t>(infoList[i].m_rowSize);
+      const uint32_t columnSize = static_cast<uint32_t>(infoList[i].m_columnSize);
+      destSizes[i] = static_cast<uint32_t>(gfxGetMatrixMemorySize(context, rowSize, columnSize, d3dLayout, dataType, 0));
+      totalDestSize += static_cast<size_t>(destSizes[i]);
+    }
+
+    if (totalDestSize > 0) {
+      std::shared_ptr destBuffer = createGfxBuffer<uint8_t>(context, totalDestSize);
+      gfxFinish(context);
+
+      // Convert each matrix on the GPU
+      bool conversionOk = true;
+      uint64_t srcOffset = 0;
+      uint64_t dstOffset = 0;
+      for (size_t i = 0; i < infoList.size(); ++i) {
+        const uint32_t rowSize = static_cast<uint32_t>(infoList[i].m_rowSize);
+        const uint32_t columnSize = static_cast<uint32_t>(infoList[i].m_columnSize);
+        const size_t srcSizeBytes = static_cast<size_t>(rowSize) * infoList[i].m_stride;
+        if (srcSizeBytes > static_cast<size_t>(std::numeric_limits<uint32_t>::max())) {
+          conversionOk = false;
+          break;
+        }
+        const uint32_t srcSize = static_cast<uint32_t>(srcSizeBytes);
+        gfxFinish(context);
+        const GfxResult result = gfxConvertMatrix(context,
+            *destBuffer, dstOffset, destSizes[i], d3dLayout, 0, dataType,
+            *buffer, srcOffset, srcSize, toD3D12MatrixLayout(MatrixLayout::ROW_MAJOR), static_cast<uint32_t>(infoList[i].m_stride), dataType,
+            rowSize, columnSize);
+        if (result != kGfxResult_NoError) {
+          conversionOk = false;
+          break;
+        }
+        srcOffset += static_cast<uint64_t>(infoList[i].m_dataSize);
+        dstOffset += static_cast<uint64_t>(destSizes[i]);
+      }
+      if (conversionOk) {
+        gfxFinish(context);
+        // Verify conversion produced non-zero data
+        GfxBuffer staging = gfxCreateBuffer(context, totalDestSize, nullptr, kGfxCpuAccess_Read);
+        gfxCommandCopyBuffer(context, staging, 0, *destBuffer, 0, totalDestSize);
+        gfxFinish(context);
+        const void* mapped = gfxBufferGetData(context, staging);
+        bool hasNonZero = false;
+        if (mapped) {
+          const auto* bytes = static_cast<const uint8_t*>(mapped);
+          for (size_t b = 0; b < totalDestSize; ++b)
+            if (bytes[b] != 0) { hasNonZero = true; break; }
+        }
+        gfxDestroyBuffer(context, staging);
+        if (hasNonZero) {
+          // Update info entries to reflect the GPU-converted layout
+          for (size_t i = 0; i < infoList.size(); ++i) {
+            infoList[i].m_layout = requestedLayout;
+            infoList[i].m_dataSize = static_cast<size_t>(destSizes[i]);
+          }
+          return destBuffer;
+        }
+      }
+    }
+    // Conversion not available
+    if (allowRowMajorFallback) {
+      // info entries already have m_layout = ROW_MAJOR
+      return buffer;
+    }
+    return {};
   }
-  const std::vector bufferData = ex::packMatrixData<Type>(layerDataList, layerInfoList, layout, matrixStrideListOut, alignment, strideAlignment);
-  std::shared_ptr buffer = ex::createGfxBuffer<Type>(context, bufferData);
-  return buffer;
+
+  // ROW_MAJOR and COLUMN_MAJOR: pack directly
+  const std::vector bufferData = packAsD3D12Matrix<Type>(infoList);
+  return createGfxBuffer<Type>(context, bufferData);
+}
+
+//! Pack vectors into a GPU buffer using D3D12VectorInfo.
+template <Arithmetic Type> inline
+auto packAsD3D12VectorBuffer(GfxContext context,
+                             std::span<D3D12VectorInfo<Type>> infoList) -> std::shared_ptr<GfxBuffer>
+{
+  const std::vector bufferData = packAsD3D12Vector<Type>(infoList);
+  return createGfxBuffer<Type>(context, bufferData);
 }
 
 template <Arithmetic Type> inline
-auto convertToVectorBuffer(GfxContext context,
-                           const std::span<const Type> data,
-                           const size_t alignment = VECTOR_ALIGNMENT) -> std::shared_ptr<GfxBuffer>
+auto unpackD3D12MatrixBuffer(GfxContext context,
+                             GfxBuffer buffer,
+                             std::span<const D3D12MatrixInfo<Type>> infoList) -> std::vector<Type>
 {
-  std::vector<std::span<const Type>> layerDataList;
-  layerDataList.emplace_back(data);
-  const std::vector bufferData = ex::packVectorData<Type>(layerDataList, alignment);
-  std::shared_ptr buffer = ex::createGfxBuffer<Type>(context, bufferData);
-  return buffer;
-}
+  if (infoList.empty())
+    return {};
 
-template <Arithmetic Type> inline
-auto convertToVectorBuffer(GfxContext context,
-                           const std::span<const MlpLayer<Type, Type>> data,
-                           const size_t alignment = VECTOR_ALIGNMENT) -> std::shared_ptr<GfxBuffer>
-{
-  using MlpLayerT = MlpLayer<Type, Type>;
-  std::vector<std::span<const Type>> layerDataList;
-  layerDataList.reserve(data.size());
-  for (const MlpLayerT& layer : data) {
-    layerDataList.emplace_back(layer.biasData());
+  const MatrixLayout layout = infoList[0].m_layout;
+
+  if (needsMatrixConversion(layout)) {
+    constexpr uint32_t dataType = toD3D12DataType<Type>();
+    const uint32_t srcD3dLayout = toD3D12MatrixLayout(layout);
+    constexpr uint32_t dstD3dLayout = toD3D12MatrixLayout(MatrixLayout::ROW_MAJOR);
+
+    std::vector<D3D12MatrixInfo<Type>> rowMajorInfoList(infoList.begin(), infoList.end());
+    for (auto& info : rowMajorInfoList)
+      info.m_layout = MatrixLayout::ROW_MAJOR;
+
+    size_t totalDstSize = 0;
+    for (auto& info : rowMajorInfoList) {
+      getD3D12MatrixInfo(info);
+      totalDstSize += info.m_dataSize;
+    }
+
+    GfxBuffer destBuffer = gfxCreateBuffer(context, totalDstSize, nullptr, kGfxCpuAccess_None);
+    gfxFinish(context);
+
+    uint64_t srcOffset = 0;
+    uint64_t dstOffset = 0;
+    for (size_t i = 0; i < infoList.size(); ++i) {
+      const uint32_t rowSize = static_cast<uint32_t>(infoList[i].m_rowSize);
+      const uint32_t columnSize = static_cast<uint32_t>(infoList[i].m_columnSize);
+      const uint32_t srcSize = static_cast<uint32_t>(infoList[i].m_dataSize);
+      const uint32_t dstSize = static_cast<uint32_t>(rowMajorInfoList[i].m_dataSize);
+      gfxFinish(context);
+      gfxConvertMatrix(context,
+          destBuffer, dstOffset, dstSize, dstD3dLayout, static_cast<uint32_t>(rowMajorInfoList[i].m_stride), dataType,
+          buffer, srcOffset, srcSize, srcD3dLayout, 0, dataType,
+          rowSize, columnSize);
+      srcOffset += static_cast<uint64_t>(infoList[i].m_dataSize);
+      dstOffset += static_cast<uint64_t>(rowMajorInfoList[i].m_dataSize);
+    }
+    gfxFinish(context);
+
+    GfxBuffer staging = gfxCreateBuffer(context, totalDstSize, nullptr, kGfxCpuAccess_Read);
+    gfxCommandCopyBuffer(context, staging, 0, destBuffer, 0, totalDstSize);
+    gfxFinish(context);
+    const Type* mapped = gfxBufferGetData<Type>(context, staging);
+
+    std::vector<Type> result;
+    size_t readOffset = 0;
+    for (size_t i = 0; i < rowMajorInfoList.size(); ++i) {
+      const size_t elemCount = rowMajorInfoList[i].m_dataSize / sizeof(Type);
+      std::span<const Type> src{mapped + readOffset, elemCount};
+      std::vector<Type> mat = convertToRowMatrix(rowMajorInfoList[i], src);
+      result.insert(result.end(), mat.begin(), mat.end());
+      readOffset += elemCount;
+    }
+
+    gfxDestroyBuffer(context, staging);
+    gfxDestroyBuffer(context, destBuffer);
+    return result;
   }
-  const std::vector bufferData = ex::packVectorData<Type>(layerDataList, alignment);
-  std::shared_ptr buffer = ex::createGfxBuffer<Type>(context, bufferData);
-  return buffer;
+
+  GfxBuffer staging = gfxCreateBuffer(context, buffer.getSize(), nullptr, kGfxCpuAccess_Read);
+  gfxCommandCopyBuffer(context, staging, buffer);
+  gfxFinish(context);
+  const Type* mapped = gfxBufferGetData<Type>(context, staging);
+
+  std::vector<Type> result;
+  size_t readOffset = 0;
+  for (size_t i = 0; i < infoList.size(); ++i) {
+    const size_t elemCount = infoList[i].m_dataSize / sizeof(Type);
+    std::span<const Type> src{mapped + readOffset, elemCount};
+    std::vector<Type> mat = convertToRowMatrix(infoList[i], src);
+    result.insert(result.end(), mat.begin(), mat.end());
+    readOffset += elemCount;
+  }
+
+  gfxDestroyBuffer(context, staging);
+  return result;
 }
 
 } /* namespace ex */
 
 #endif /* MINIDXNN_EXAMPLE_GFX_UTILITY_HPP */
-

@@ -24,6 +24,9 @@ function(buildUnittest target)
 
   source_group(TREE "${CMAKE_CURRENT_FUNCTION_LIST_DIR}" PREFIX ${target} FILES ${source_files})
   add_executable(${target} ${source_files})
+  if(CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+    target_compile_options(${target} PRIVATE /bigobj)
+  endif()
 
   #
   if(NOT TARGET example-common)
@@ -39,6 +42,8 @@ function(buildUnittest target)
       COMMAND ${CMAKE_COMMAND} -E copy_if_newer $<TARGET_RUNTIME_DLLS:${target}> $<TARGET_FILE_DIR:${target}>
       COMMAND_EXPAND_LISTS
       COMMENT "Copying runtime DLLs to output directory")
+    # Override with custom runtime DLLs from third_party/runtime/ if present
+    copyRuntimeOverrides(${target})
   endif()
 
   # Link test kernel directory

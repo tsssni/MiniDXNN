@@ -25,15 +25,28 @@ enum class LossType
   MSE = 0,
 };
 
-//! Compute MSE loss: (1/N) * sum((output - target)^2) where N = output.size()
 template <Arithmetic Type>
-[[nodiscard]] inline
+[[nodiscard]]
+auto mseLoss(const std::span<const Type> output,
+             const std::span<const Type> target) noexcept -> Type;
+
+template <Arithmetic Type>
+[[nodiscard]]
+auto mseLossGradient(const std::span<const Type> output,
+                     const std::span<const Type> target) noexcept -> std::vector<Type>;
+
+// ============================================================================
+// Implementation
+// ============================================================================
+
+//! Compute MSE loss: (1/N) * sum((output - target)^2) where N = output.size()
+template <Arithmetic Type> inline
 auto mseLoss(const std::span<const Type> output,
              const std::span<const Type> target) noexcept -> Type 
 {
   assert(output.size() == target.size());
   const size_t n = output.size();
-  auto sum = static_cast<Type>(0);
+  Type sum = static_cast<Type>(0);
   for (size_t i = 0; i < n; ++i) {
     const Type diff = output[i] - target[i];
     sum += diff * diff;
@@ -42,8 +55,7 @@ auto mseLoss(const std::span<const Type> output,
 }
 
 //! Compute gradient of MSE loss: dL/dOutput = (2/N) * (output - target)
-template <Arithmetic Type>
-[[nodiscard]] inline
+template <Arithmetic Type> inline
 auto mseLossGradient(const std::span<const Type> output,
                      const std::span<const Type> target) noexcept -> std::vector<Type>
 {

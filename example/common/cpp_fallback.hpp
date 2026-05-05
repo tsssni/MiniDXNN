@@ -34,6 +34,7 @@
 #include <cstdint>
 #include <cstring>
 #include <span>
+#include <utility>
 #include <vector>
 // Half
 #include "half.hpp"
@@ -62,7 +63,7 @@ constexpr bool isCppFallbackForced =
 #endif
 
 // ============================================================================
-// DxLinalgDataTypeOf — map C++ type to dx::linalg::DataType at compile time
+// DxLinalgDataTypeOf — map C++ type to dx::linalg::ComponentEnum at compile time
 // ============================================================================
 
 template <typename T>
@@ -70,12 +71,12 @@ struct DxLinalgDataTypeOf;
 
 template <>
 struct DxLinalgDataTypeOf<half_float::half> {
-  [[maybe_unused]] static constexpr auto value = dx::linalg::DATA_TYPE_FLOAT16;
+  [[maybe_unused]] static constexpr dx::linalg::DataType value = dx::linalg::DATA_TYPE_FLOAT16;
 };
 
 template <>
 struct DxLinalgDataTypeOf<float> {
-  [[maybe_unused]] static constexpr auto value = dx::linalg::DATA_TYPE_FLOAT32;
+  [[maybe_unused]] static constexpr dx::linalg::DataType value = dx::linalg::DATA_TYPE_FLOAT32;
 };
 
 // ============================================================================
@@ -110,53 +111,95 @@ struct PackedMlpBuffers
   std::vector<std::uint8_t> biasBuf;
   uint2 matrixSizes{};
 
-  ByteAddressBuffer weightBAB() const { return ByteAddressBuffer{weightBuf}; }
-  ByteAddressBuffer biasBAB()   const { return ByteAddressBuffer{biasBuf}; }
+  auto weightBAB() const -> ByteAddressBuffer { return ByteAddressBuffer{weightBuf}; }
+  auto biasBAB() const -> ByteAddressBuffer { return ByteAddressBuffer{biasBuf}; }
 
-  void pack(const std::span<const MlpLayer<Type, Type>> mlpData, bool hasBias)
-  {
-    const size_t numLayers = mlpData.size();
-
-    // Prepare weight/bias data and layer info for packing
-    std::vector<std::span<const Type>> weightDataList;
-    std::vector<std::span<const Type>> biasDataList;
-    std::vector<std::tuple<size_t, size_t>> layerInfoList;
-    for (size_t i = 0; i < numLayers; ++i) {
-      weightDataList.push_back(mlpData[i].weightData());
-      layerInfoList.emplace_back(mlpData[i].inputDimension(), mlpData[i].outputDimension());
-      if (hasBias)
-        biasDataList.push_back(mlpData[i].biasData());
-      else
-        biasDataList.emplace_back(std::span<const Type>{});
-    }
-
-    // Pack weights
-    std::vector<size_t> matrixStrides(numLayers);
-    auto packedWeights = packMatrixData<Type>(
-        weightDataList, layerInfoList, MatrixLayout::ROW_MAJOR,
-        matrixStrides, MATRIX_ALIGNMENT, MATRIX_VECTOR_STRIDE_ALIGNMENT);
-    weightBuf.resize(packedWeights.size() * sizeof(Type));
-    std::memcpy(weightBuf.data(), packedWeights.data(), weightBuf.size());
-
-    matrixSizes[0] = static_cast<uint>(matrixStrides[0]);
-    matrixSizes[1] = numLayers > 1 ? static_cast<uint>(matrixStrides[1]) : matrixSizes[0];
-
-    // Pack biases
-    if (hasBias) {
-      auto packedBiases = packVectorData<Type>(biasDataList, VECTOR_ALIGNMENT);
-      biasBuf.resize(packedBiases.size() * sizeof(Type));
-      std::memcpy(biasBuf.data(), packedBiases.data(), biasBuf.size());
-    } else {
-      const size_t hiddenDim = (numLayers > 1) ? mlpData[0].outputDimension() : mlpData[0].inputDimension();
-      const size_t biasStride = alignBytes(hiddenDim * sizeof(Type), VECTOR_ALIGNMENT);
-      biasBuf.assign(biasStride * numLayers, 0);
-    }
-  }
+  auto pack(const std::span<const MlpLayer<Type, Type>> mlpData, bool hasBias) -> void;
 };
 
 // ============================================================================
 // Gradient unpacking/collection utilities
 // ============================================================================
+
+template <Arithmetic Type>
+auto unpackWeightGrads(const std::vector<std::uint8_t>& buf,
+                       const std::span<const MlpLayer<Type, Type>> mlpData,
+                       const uint2& matrixSizes) -> std::vector<Type>;
+
+template <Arithmetic Type>
+auto unpackBiasGrads(const std::vector<std::uint8_t>& buf,
+                     const std::span<const MlpLayer<Type, Type>> mlpData,
+                     size_t hiddenDim) -> std::vector<Type>;
+
+template <Arithmetic Type>
+auto collectWeightGrads(const std::span<const MlpLayer<Type, Type>> mlpData) -> std::vector<Type>;
+
+template <Arithmetic Type>
+auto collectBiasGrads(const std::span<const MlpLayer<Type, Type>> mlpData) -> std::vector<Type>;
+
+// ============================================================================
+// Pack a single weight matrix into a byte buffer with stride-aligned rows,
+// matching the layout expected by mlp.hlsl MatrixRefImpl.
+// ============================================================================
+
+template <Arithmetic Type>
+auto packSingleMatrix(const std::span<const Type> data,
+                      const size_t rowSize,
+                      const size_t columnSize,
+                      const bool isTransposed) -> std::pair<std::vector<std::uint8_t>, size_t /*vectorStride*/>;
+
+template <Arithmetic Type>
+auto packSingleBias(const std::span<const Type> data,
+                    const size_t rowSize) -> std::vector<std::uint8_t>;
+
+// ============================================================================
+// Implementation
+// ============================================================================
+
+template <Arithmetic Type>
+auto PackedMlpBuffers<Type>::pack(const std::span<const MlpLayer<Type, Type>> mlpData, bool hasBias) -> void
+{
+  const size_t numLayers = mlpData.size();
+
+  // Pack weights using D3D12MatrixInfo
+  std::vector<D3D12MatrixInfo<Type>> matrixInfoList;
+  matrixInfoList.reserve(numLayers);
+  for (size_t i = 0; i < numLayers; ++i) {
+    D3D12MatrixInfo<Type> info;
+    info.m_srcData = mlpData[i].weightData();
+    info.m_rowSize = mlpData[i].outputDimension();
+    info.m_columnSize = mlpData[i].inputDimension();
+    info.m_alignment = MATRIX_ALIGNMENT;
+    info.m_vectorStrideAlignment = MATRIX_VECTOR_STRIDE_ALIGNMENT;
+    info.m_layout = MatrixLayout::ROW_MAJOR;
+    matrixInfoList.push_back(info);
+  }
+  std::vector packedWeights = packAsD3D12Matrix<Type>(matrixInfoList);
+  weightBuf.resize(packedWeights.size() * sizeof(Type));
+  std::memcpy(weightBuf.data(), packedWeights.data(), weightBuf.size());
+
+  matrixSizes[0] = static_cast<uint>(matrixInfoList[0].m_dataSize);
+  matrixSizes[1] = numLayers > 1 ? static_cast<uint>(matrixInfoList[1].m_dataSize) : matrixSizes[0];
+
+  // Pack biases using D3D12VectorInfo
+  if (hasBias) {
+    std::vector<D3D12VectorInfo<Type>> vectorInfoList;
+    vectorInfoList.reserve(numLayers);
+    for (size_t i = 0; i < numLayers; ++i) {
+      D3D12VectorInfo<Type> info;
+      info.m_srcData = mlpData[i].biasData();
+      info.m_alignment = VECTOR_ALIGNMENT;
+      vectorInfoList.push_back(info);
+    }
+    std::vector packedBiases = packAsD3D12Vector<Type>(vectorInfoList);
+    biasBuf.resize(packedBiases.size() * sizeof(Type));
+    std::memcpy(biasBuf.data(), packedBiases.data(), biasBuf.size());
+  } else {
+    const size_t hiddenDim = (numLayers > 1) ? mlpData[0].outputDimension() : mlpData[0].inputDimension();
+    const size_t biasStride = alignBytes(hiddenDim * sizeof(Type), VECTOR_ALIGNMENT);
+    biasBuf.assign(biasStride * numLayers, 0);
+  }
+}
 
 // Unpack weight gradients from a flat byte buffer back to per-layer matrices
 template <Arithmetic Type>
@@ -221,11 +264,6 @@ auto collectBiasGrads(const std::span<const MlpLayer<Type, Type>> mlpData) -> st
       grads.push_back(g);
   return grads;
 }
-
-// ============================================================================
-// Pack a single weight matrix into a byte buffer with stride-aligned rows,
-// matching the layout expected by mlp.hlsl MatrixRefImpl.
-// ============================================================================
 
 template <Arithmetic Type>
 auto packSingleMatrix(const std::span<const Type> data,

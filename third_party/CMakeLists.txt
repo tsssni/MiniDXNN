@@ -28,6 +28,10 @@ project(ThirdParty DESCRIPTION ${project_desc} LANGUAGES CXX)
   add_subdirectory("${PROJECT_SOURCE_DIR}/cli11_dep" "${PROJECT_BINARY_DIR}/cli11_dep")
   checkTarget(cli11-dep)
 
+  # Build stb_image (header-only image loading/writing)
+  add_subdirectory("${PROJECT_SOURCE_DIR}/stb_image_dep" "${PROJECT_BINARY_DIR}/stb_image_dep")
+  checkTarget(stb-image-dep)
+
   # Build Google Test framework
   add_subdirectory("${PROJECT_SOURCE_DIR}/gtest_dep" "${PROJECT_BINARY_DIR}/gtest_dep")
   checkTarget(gtest-dep)

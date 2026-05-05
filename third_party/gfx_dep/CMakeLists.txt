@@ -40,5 +40,12 @@ project(gfx-dep DESCRIPTION "${project_desc}" LANGUAGES CXX)
   setCxxCompileFlags(gfx PRIVATE)
   setSanitizerFlags(gfx PRIVATE)
 
-  # 
+  #
   add_library(${PROJECT_NAME} ALIAS gfx)
+
+  # Treat gfx public include directories as SYSTEM for dependents
+  # to suppress third-party warnings when MINIDXNN_WARNING_EXTRA is enabled
+  get_target_property(_gfx_includes gfx INTERFACE_INCLUDE_DIRECTORIES)
+  if(_gfx_includes)
+    target_include_directories(gfx SYSTEM INTERFACE ${_gfx_includes})
+  endif()

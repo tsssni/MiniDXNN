@@ -1,6 +1,6 @@
 # MiniDXNN Examples
 
-Example applications for GPU-accelerated MLP inference and training with DirectX 12 Cooperative Vector.
+Example applications for GPU-accelerated MLP inference and training with DirectX 12 LinAlg Matrix.
 
 ## Table of Contents
 
@@ -23,7 +23,7 @@ Loads a pre-trained MLP binary and reconstructs a texture on the GPU.
 ```bash
 pip install torch numpy matplotlib
 cd scripts/pyreference
-python texture_reconstruction_mlp.py            # defaults: 3 hidden layers, 64 neurons, leaky_relu
+python texture_reconstruction_mlp.py            # defaults: 4 hidden layers, 64 neurons, leaky_relu
 ```
 
 <details>
@@ -31,20 +31,20 @@ python texture_reconstruction_mlp.py            # defaults: 3 hidden layers, 64 
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--backbone-layers` | `3` | Number of hidden layers |
+| `--backbone-layers` | `4` | Number of hidden layers |
 | `--hidden-dim` | `64` | Neurons per hidden layer |
 | `--activation` | `leaky_relu` | `identity`, `sigmoid`, `tanh`, `relu`, `leaky_relu` |
 | `--texture-pattern` | `checkerboard` | `gradient`, `checkerboard`, `stripes`, `circle`, `perlin` |
 | `--epochs` | `30` | Training iterations |
-| `--learning-rate` | `0.01` | Optimizer learning rate |
-| `--optimizer` | `adam` | `sgd`, `adam`, `lion` |
+| `--learning-rate` | `0.0025` | Optimizer learning rate |
+| `--optimizer` | `lion` | `sgd`, `adam`, `lion` |
 | `--dtype` | `float` | `float`, `half` |
-| `--samples` | `50000` | Number of training samples |
-| `--batch-size` | `500` | Training batch size |
+| `--samples` | `200000` | Number of training samples |
+| `--batch-size` | `2000` | Training batch size |
 | `--no-display` | `false` | Skip matplotlib display and exit automatically |
 | `--seed` | `987654321` | Random seed |
-| `--texture-width` | `1024` | Texture width |
-| `--texture-height` | `1024` | Texture height |
+| `--texture-width` | `2048` | Texture width |
+| `--texture-height` | `2048` | Texture height |
 
 </details>
 
@@ -59,11 +59,11 @@ Release/01-texture-inference.exe ../../scripts/pyreference/texture-mlp-data.bin 
 |----------|----------|---------|-------------|
 | `mlp-binary` | Yes | — | Path to MLP binary file |
 | `output` | No | `mlp-inference-output.ppm` | Output PPM image |
-| `--texture-width` | No | `1024` | Image width |
-| `--texture-height` | No | `1024` | Image height |
+| `--texture-width` | No | `4096` | Image width |
+| `--texture-height` | No | `4096` | Image height |
 | `--cpu` | No | `false` | Use CPU reference ML operations instead of GPU |
 | `--cpp-fallback` | No | `false` | Use C++ fallback (mlp.hlsl compiled as C++) |
-| `--software-linalg` | No | `false` | Use software linear algebra instead of Cooperative Vector |
+| `--software-linalg` | No | `false` | Use software linear algebra instead of LinAlg Matrix |
 | `--debug` | No | `false` | Verbose output |
 
 ---
@@ -83,22 +83,22 @@ Release/02-texture-training.exe --output-image training-result.ppm
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--backbone-layers` | `3` | Number of hidden layers |
+| `--backbone-layers` | `4` | Number of hidden layers |
 | `--hidden-dim` | `64` | Neurons per hidden layer |
 | `--activation` | `leaky_relu` | `identity`, `sigmoid`, `tanh`, `relu`, `leaky_relu` |
 | `--bias` / `--no-bias` | `true` | Enable/disable bias in MLP layers |
 | `--epochs` | `30` | Training epochs |
-| `--batch-size` | `500` | Mini-batch size |
-| `--learning-rate` | `0.01` | Optimizer learning rate |
-| `--optimizer` | `adam` | `sgd`, `adam`, `lion` |
-| `--samples` | `50000` | Number of training samples |
-| `--texture-width` | `1024` | Texture width |
-| `--texture-height` | `1024` | Texture height |
+| `--batch-size` | `2000` | Mini-batch size |
+| `--learning-rate` | `0.0025` | Optimizer learning rate |
+| `--optimizer` | `lion` | `sgd`, `adam`, `lion` |
+| `--samples` | `200000` | Number of training samples |
+| `--texture-width` | `2048` | Texture width |
+| `--texture-height` | `2048` | Texture height |
 | `--texture-pattern` | `checkerboard` | `gradient`, `checkerboard`, `stripes`, `circle`, `perlin` |
 | `--output-image` | `mlp-training-output.ppm` | Output PPM image |
 | `--cpu` | `false` | Use CPU reference ML operations instead of GPU |
 | `--cpp-fallback` | `false` | Use C++ fallback (mlp.hlsl compiled as C++) |
-| `--software-linalg` | `false` | Use software linear algebra instead of Cooperative Vector |
+| `--software-linalg` | `false` | Use software linear algebra instead of LinAlg Matrix |
 | `--debug` | `false` | Enable debug mode for detailed output |
 | `--seed` | `987654321` | Random seed |
 

@@ -67,7 +67,7 @@ auto createGfxContext(const bool enableDebugShader) -> std::shared_ptr<GfxContex
 
 auto createGfxProgram(GfxContext context, const std::string_view fileName, const std::filesystem::path& dirPath, const std::span<const OptionString> includePathList) -> std::shared_ptr<GfxProgram>
 {
-  const std::string_view shaderMode = "6_9";
+  const std::string_view shaderMode = "6_10";
   std::vector<const char*> pathList;
   pathList.resize(includePathList.size());
   std::ranges::transform(includePathList, pathList.begin(), [](const OptionString& option) -> const char*
@@ -106,58 +106,6 @@ auto createGfxComputeKernel(GfxContext context, GfxProgram program, const std::s
     }
   });
   return sharedKernel;
-}
-
-auto runKernel(GfxContext context, GfxProgram program, GfxKernel kernel, const size_t threadGroupSize, std::initializer_list<BufferBindingDataT> bufferList, std::initializer_list<IntBindingDataT> intList, OptionalRef<float> execTimeInMs, std::initializer_list<FloatBindingDataT> floatList) -> void
-{
-  // Bind parameters
-  GfxAssertTrue{}(gfxCommandBindKernel(context, kernel), "Binding the kernel failed.");
-  for (const BufferBindingDataT& data : bufferList) {
-    GfxAssertTrue{}(gfxProgramSetBuffer(context, program, data.m_name.data(), data.m_value), "");
-  }
-  for (const IntBindingDataT& data : intList) {
-    GfxAssertTrue{}(gfxProgramSetParameter<std::int32_t>(context, program, data.m_name.data(), data.m_value), "");
-  }
-  for (const FloatBindingDataT& data : floatList) {
-    GfxAssertTrue{}(gfxProgramSetParameter<float>(context, program, data.m_name.data(), data.m_value), "");
-  }
-
-  // Start measuring the kernel execution time
-  std::shared_ptr<GfxTimestampQuery> timestamp;
-  if (execTimeInMs.has_value()) {
-    GfxTimestampQuery stamp = gfxCreateTimestampQuery(context);
-    timestamp.reset(new GfxTimestampQuery{stamp}, [context](GfxTimestampQuery* t)
-    {
-      if (t != nullptr) {
-        if (*t) {
-          GfxAssertTrue{}(gfxDestroyTimestampQuery(context, *t), "");
-        }
-        delete t;
-      }
-    });
-  }
-  if (timestamp) GfxAssertTrue{}(gfxCommandBeginTimestampQuery(context, *timestamp), "");
-
-  // Run the kernel
-  GfxAssertTrue{}(gfxCommandDispatch(context, static_cast<std::uint32_t>(threadGroupSize), 1, 1), "Dispatching the command failed.");
-
-  // End
-  if (timestamp) {
-    GfxAssertTrue{}(gfxCommandEndTimestampQuery(context, *timestamp), "");
-    GfxAssertTrue{}(gfxCommandResolveTimestamp(context), "");
-  }
-
-  // Wait for the kernel completion
-  GfxAssertTrue{}(gfxFinish(context), "");
-
-  // Kernel execution time
-  if (timestamp) {
-    // TODO. Get the duration time
-    GfxAssertTrue{}(gfxCommandUpdateTimestamp(context), "");
-    const float execTime = gfxTimestampQueryGetDuration(context, *timestamp);
-    execTimeInMs->get() = execTime;
-  }
-  timestamp.reset();
 }
 
 auto runKernel(GfxContext context, GfxProgram program, GfxKernel kernel, const size_t threadGroupSize, std::span<const BufferBindingDataT> bufferList, std::initializer_list<IntBindingDataT> intList, OptionalRef<float> execTimeInMs, std::initializer_list<FloatBindingDataT> floatList) -> void
@@ -209,6 +157,13 @@ auto runKernel(GfxContext context, GfxProgram program, GfxKernel kernel, const s
     execTimeInMs->get() = execTime;
   }
   timestamp.reset();
+}
+
+auto runKernel(GfxContext context, GfxProgram program, GfxKernel kernel, const size_t threadGroupSize, std::initializer_list<BufferBindingDataT> bufferList, std::initializer_list<IntBindingDataT> intList, OptionalRef<float> execTimeInMs, std::initializer_list<FloatBindingDataT> floatList) -> void
+{
+  runKernel(context, program, kernel, threadGroupSize,
+            std::span<const BufferBindingDataT>{bufferList.begin(), bufferList.size()},
+            intList, execTimeInMs, floatList);
 }
 
 } /* namespace ex */

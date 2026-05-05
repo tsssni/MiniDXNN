@@ -24,19 +24,12 @@
 #include <vector>
 // Example
 #include "activation.hpp"
+#include "d3d12_format.hpp"
 #include "matrix.hpp"
 #include "utility.hpp"
 #include "xoshiro128plus.hpp"
 
 namespace ex {
-
-enum class MatrixLayout
-{
-  ROW_MAJOR = 0,
-  COLUMN_MAJOR,
-  MUL_OPTIMAL,
-  OUTER_PRODUCT_OPTIMAL,
-};
 
 //! MLP layer configuration
 struct LayerConfiguration
@@ -45,15 +38,6 @@ struct LayerConfiguration
   size_t m_outputDim;
   ActivationType m_activation;
 };
-
-// The base address of matrix resource and matrix offset must be 128-byte aligned. Also note that the size of the underlying allocation is guaranteed to be a multiple of 16 bytes ensuring that the 16 bytes access of the last row/column of the matrix is valid memory.
-static constexpr size_t MATRIX_ALIGNMENT = 128;
-// The matrix stride is 16-byte aligned.
-static constexpr size_t MATRIX_VECTOR_STRIDE_ALIGNMENT = 16;
-// The base address of bias vector resource and bias vector offset must be 64-byte aligned.
-static constexpr size_t VECTOR_ALIGNMENT = 64;
-// GLSL_NV_cooperative_vector requires: offset must be a multiple of 16. For buffer storage, the start of 'buf' must be 16B aligned.
-//static constexpr size_t VECTOR_ALIGNMENT = 16;
 
 //! MLP layer holding weight/bias data and their gradients
 template <Arithmetic WeightT, Arithmetic BiasT, Arithmetic WeightGradT = WeightT, Arithmetic BiasGradT = BiasT>
@@ -196,7 +180,9 @@ auto backward(const std::span<const Type> lossGrad,
               std::span<MlpLayer<WeightT, BiasT, WeightGradT, BiasGradT>> mlpData,
               const std::span<Type> logitsCache) noexcept -> std::vector<Type>;
 
+// ============================================================================
 // Implementation
+// ============================================================================
 
 namespace detail {
 
@@ -358,7 +344,7 @@ auto backward(const std::span<const Type> lossGrad,
     }
 
     // Accumulate weight gradient: dW += delta * a[i]^T (outer product)
-    auto wGrads = layer.weightGrads();
+    std::span<WeightGradT> wGrads = layer.weightGrads();
     for (size_t r = 0; r < outDim; ++r) {
       for (size_t c = 0; c < inDim; ++c) {
         wGrads[r * inDim + c] += static_cast<WeightGradT>(delta[r] * inputToLayer[c]);
@@ -366,74 +352,17 @@ auto backward(const std::span<const Type> lossGrad,
     }
 
     // Accumulate bias gradient: db += delta
-    auto bGrads = layer.biasGrads();
+    std::span<BiasGradT> bGrads = layer.biasGrads();
     for (size_t j = 0; j < outDim; ++j) {
       bGrads[j] += static_cast<BiasGradT>(delta[j]);
     }
 
     // Propagate to previous layer: delta_prev = W^T * delta
-    auto transposedW = layer.transposedWeightMatrix();
+    TransposedMatrixRef<WeightT> transposedW = layer.transposedWeightMatrix();
     std::vector prevDelta = mul<Type>(transposedW, std::span<const Type>(delta));
     delta = std::move(prevDelta);
   }
   return delta;
-}
-
-template <Arithmetic Type> inline
-auto packMatrixData(const std::span<const std::span<const Type>> dataList,
-                    const std::span<const std::tuple<size_t, size_t>> layerInfoList,
-                    [[maybe_unused]] const MatrixLayout layout,
-                    std::span<size_t> matrixStrideListOut,
-                    const size_t alignment = 128,
-                    const size_t strideAlignment = 16) -> std::vector<Type>
-{
-  std::vector<Type> memory;
-  size_t memorySize = 0;
-  for (size_t i = 0; i < dataList.size(); ++i) {
-    std::span<Type> data{const_cast<Type*>(dataList[i].data()), dataList[i].size()};
-    const auto [inputDim, outputDim] = layerInfoList[i];
-    const MatrixRef<Type> matrix{outputDim, inputDim, data};
-    const size_t vectorStride = alignN<Type>(matrix.columnSize(), strideAlignment);
-    const size_t stride = alignN<Type>(vectorStride * matrix.rowSize(), alignment);
-    matrixStrideListOut[i] = stride * sizeof(Type);
-    memorySize += stride;
-  }
-  memory.resize(memorySize, static_cast<Type>(0));
-  for (size_t i = 0, offset = 0; i < dataList.size(); ++i) {
-    std::span<Type> data{const_cast<Type*>(dataList[i].data()), dataList[i].size()};
-    const auto [inputDim, outputDim] = layerInfoList[i];
-    const MatrixRef<Type> matrix{outputDim, inputDim, data};
-    const size_t vectorStride = alignN<Type>(matrix.columnSize(), strideAlignment);
-    for (size_t r = 0, o = offset; r < matrix.rowSize(); ++r) {
-      for (size_t c = 0; c < matrix.columnSize(); ++c) {
-        memory[o + c] = matrix(r, c);
-      }
-      o += vectorStride;
-    }
-    offset += alignN<Type>(vectorStride * matrix.rowSize(), alignment);
-  }
-  return memory;
-}
-
-template <Arithmetic Type> inline
-auto packVectorData(const std::span<const std::span<const Type>> dataList,
-                    const size_t alignment = 64) -> std::vector<Type>
-{
-  std::vector<Type> memory;
-  size_t memorySize = 0;
-  for (size_t i = 0; i < dataList.size(); ++i) {
-    const std::span<const Type> data{dataList[i]};
-    const size_t stride = alignN<Type>(data.size(), alignment);
-    memorySize += stride;
-  }
-  memory.resize(memorySize, static_cast<Type>(0));
-  for (size_t i = 0, offset = 0; i < dataList.size(); ++i) {
-    const std::span<const Type> data{dataList[i]};
-    std::ranges::copy(data, memory.begin() + static_cast<std::ptrdiff_t>(offset));
-    const size_t stride = alignN<Type>(data.size(), alignment);
-    offset += stride;
-  }
-  return memory;
 }
 
 } /* namespace ex */

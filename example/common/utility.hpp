@@ -63,7 +63,9 @@ auto read(Type* data, std::istream& input, const std::streamsize size = sizeof(T
 template <typename Type>
 auto write(const Type* data, std::ostream& output, const std::streamsize size = sizeof(Type)) noexcept -> std::ostream&;
 
-// Impl
+// ============================================================================
+// Implementation
+// ============================================================================
 
 template <typename Type> inline
 auto read(Type* data, std::istream& input, const std::streamsize size) noexcept -> std::istream&
@@ -103,10 +105,10 @@ auto validateValue(const Type value) noexcept -> void
 {
   using std::isnormal;
   using half_float::isnormal;
-  const auto zero = static_cast<Type>(0);
+  const Type zero = static_cast<Type>(0);
   const bool ok = (value == zero) || isnormal(value);
   if (not ok) {
-    std::cerr << std::format("value is not normal: {}", static_cast<double>(value)) << std::endl;
+    std::cerr << std::format("value is not normal: {}\n", static_cast<double>(value));
   }
 }
 

@@ -1,7 +1,7 @@
 /*!
   \file test.hpp
   \author Sho Ikeda
-  \brief CoopVecTest fixture and test parameter definitions
+  \brief LinearAlgebraTest fixture and test parameter definitions
   \copyright Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
   SPDX-License-Identifier: MIT
@@ -14,6 +14,8 @@
 #include <cassert>
 #include <cstdint>
 #include <memory>
+#include <string>
+#include <vector>
 // GoogleTest
 #include "gtest/gtest.h"
 #ifndef MINIDXNN_CPP_FALLBACK_ONLY
@@ -37,12 +39,12 @@ struct TestParameters
   std::uint32_t m_numThreadsX = 32;
   size_t m_numTasks = 1024;
   bool m_enableDebugMode = false;
-  //
-  ex::MatrixLayout m_weightMatrixLayout = ex::MatrixLayout::ROW_MAJOR;
+  bool m_mlpTestUseRowMajor = false;
 };
 
 #ifndef MINIDXNN_CPP_FALLBACK_ONLY
-class CoopVecTest : public ::testing::TestWithParam<TestParameters>
+
+class LinearAlgebraMatrixTest : public ::testing::TestWithParam<TestParameters>
 {
  public:
   template <typename ElemType>

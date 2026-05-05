@@ -20,8 +20,8 @@ int TEST_WEIGHT_MATRIX_SIZE_HIDDEN;
 template <typename Type>
 void inference(const uint threadId)
 {
-  const dx::linalg::DataType elemType = mininn::impl::TypeTraits<Type>::COMPONENT_TYPE;
-  const dx::linalg::MatrixLayout layout = (dx::linalg::MatrixLayout)MINIDXNN_WEIGHT_MATRIX_LAYOUT;
+  const dx::linalg::ComponentEnum elemType = mininn::impl::TypeTraits<Type>::COMPONENT_TYPE;
+  const dx::linalg::MatrixLayoutEnum layout = (dx::linalg::MatrixLayoutEnum)MINIDXNN_WEIGHT_MATRIX_LAYOUT;
   using ActivationHiddenT = mininn:: MINIDXNN_ACTIVATION_HIDDEN_TYPE;
   using ActivationLastT = mininn:: MINIDXNN_ACTIVATION_LAST_TYPE;
 

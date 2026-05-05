@@ -52,6 +52,7 @@
 #endif
 #include "common/image.hpp"
 #include "common/pixmap.hpp"
+#include "common/texture.hpp"
 // C++ fallback infrastructure (includes hlsl_compat.hpp, mlp.hlsl, utility, mlp_layer)
 #include "common/cpp_fallback.hpp"
 #include "kernel/texture_inference_common.hlsl"
@@ -76,7 +77,7 @@ struct CliOptions
 
 auto createCommandLineParser(CliOptions& options) -> std::unique_ptr<CLI::App>
 {
-  auto parser = std::make_unique<CLI::App>(
+  std::unique_ptr parser = std::make_unique<CLI::App>(
       "Texture MLP inference - Reconstruct texture from a trained MLP");
 
   parser->add_option("mlp-binary", options.m_mlpBinPath, "Path to MLP binary file")
@@ -160,7 +161,7 @@ auto loadMlp(std::istream& bin) -> MlpConfig<Type>
   ex::read(&activationInt, bin);
 
   if (!bin.good()) {
-    std::cerr << "[Error] Failed to read header." << std::endl;
+    std::cerr << "[Error] Failed to read header.\n";
     std::abort();
   }
 
@@ -210,7 +211,7 @@ auto loadMlp(std::istream& bin) -> MlpConfig<Type>
   addLayer(ex::LayerConfiguration{hiddenLayerDim, 2, ex::ActivationType::SIGMOID});
 
   if (!bin.good()) {
-    std::cerr << "[Error] Failed to read data" << std::endl;
+    std::cerr << "[Error] Failed to read data\n";
     std::abort();
   }
 
@@ -228,63 +229,6 @@ auto loadMlp(std::istream& bin) -> MlpConfig<Type>
 // ============================================================================
 // UV coordinate generation
 // ============================================================================
-
-/*!
-  \brief Generate normalized UV coordinates for every pixel in the texture.
-
-  Creates a flat array of interleaved (u, v) pairs where u,v in [0,1], ordered
-  row-by-row from top-left to bottom-right. These serve as MLP input — each
-  (u,v) pair asks the network "what is the pixel value at this position?"
-
-  \return Vector of size (width * height * 2) containing [u0, v0, u1, v1, ...].
-*/
-template <ex::Arithmetic Type>
-auto createUvData(const size_t width, const size_t height) -> std::vector<Type>
-{
-  const size_t numPixels = width * height;
-  std::vector<Type> uvData;
-  uvData.reserve(numPixels * 2);
-
-  for (size_t i = 0; i < height; ++i) {
-    for (size_t j = 0; j < width; ++j) {
-      const float u = static_cast<float>(j) / static_cast<float>(width - 1);
-      const float v = static_cast<float>(i) / static_cast<float>(height - 1);
-      uvData.push_back(static_cast<Type>(u));
-      uvData.push_back(static_cast<Type>(v));
-    }
-  }
-
-  return uvData;
-}
-
-// ============================================================================
-// HDR to LDR conversion
-// ============================================================================
-
-/*!
-  \brief Convert floating-point MLP output to 8-bit grayscale.
-
-  The MLP outputs 2 channels per pixel. This function extracts the first channel,
-  clamps it to [0,1], and quantizes to [0,255] for image output.
-
-  \param hdr  MLP output (2 values per pixel: [ch0, ch1, ch0, ch1, ...])
-  \param ldr  Target pixmap for 8-bit grayscale output
-*/
-template <ex::Arithmetic Type>
-auto mapToLdr(const std::span<const Type> hdr, ex::PixmapU8& ldr) noexcept
-{
-  std::span out = ldr.data();
-  const size_t numPixels = ldr.width() * ldr.height();
-  for (size_t i = 0; i < numPixels; ++i) {
-    using half_float::round;
-    using std::round;
-    using std::clamp;
-    Type x = hdr[2 * i];
-    x = clamp(x, static_cast<Type>(0), static_cast<Type>(1));
-    x = round(x * static_cast<Type>(255));
-    out[i] = {{static_cast<std::uint8_t>(x)}};
-  }
-}
 
 // ============================================================================
 // GPU inference
@@ -304,6 +248,9 @@ template <ex::Arithmetic Type>
 auto buildKernelDefinitions(const std::span<const ex::MlpLayer<Type, Type>> mlpData,
                             const size_t numTasks,
                             const ex::MatrixLayout weightMatrixLayout,
+                            const size_t matrixAlignment,
+                            const size_t vectorStrideAlignment,
+                            const size_t biasAlignment,
                             const bool useSoftwareLinalg,
                             const bool hasBias) -> std::vector<ex::OptionString>
 {
@@ -311,8 +258,8 @@ auto buildKernelDefinitions(const std::span<const ex::MlpLayer<Type, Type>> mlpD
   const size_t outputDim = mlpData.back().outputDimension();
   const size_t numLayers = mlpData.size();
   const size_t hiddenLayerDim = mlpData.front().outputDimension();
-  const auto activationHidden = mlpData.front().configuration().m_activation;
-  const auto activationLast = mlpData.back().configuration().m_activation;
+  const ex::ActivationType activationHidden = mlpData.front().configuration().m_activation;
+  const ex::ActivationType activationLast = mlpData.back().configuration().m_activation;
 
   std::vector<ex::OptionString> defs;
   defs.reserve(14);
@@ -329,10 +276,10 @@ auto buildKernelDefinitions(const std::span<const ex::MlpLayer<Type, Type>> mlpD
   defs.push_back(ex::createOptionString("MINIDXNN_ACTIVATION_LAST_TYPE={}", ex::getActivationTypeString(activationLast)));
 
   // Weight matrix memory layout and alignment
-  defs.push_back(ex::createOptionString("MINIDXNN_WEIGHT_MATRIX_LAYOUT={}", static_cast<int>(weightMatrixLayout)));
-  defs.push_back(ex::createOptionString("MINIDXNN_WEIGHT_MATRIX_ALIGNMENT={}", ex::MATRIX_ALIGNMENT));
-  defs.push_back(ex::createOptionString("MINIDXNN_WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT={}", ex::MATRIX_VECTOR_STRIDE_ALIGNMENT));
-  defs.push_back(ex::createOptionString("MINIDXNN_BIAS_VECTOR_ALIGNMENT={}", ex::VECTOR_ALIGNMENT));
+  defs.push_back(ex::createOptionString("MINIDXNN_WEIGHT_MATRIX_LAYOUT={}", ex::toHlslMatrixLayout(weightMatrixLayout)));
+  defs.push_back(ex::createOptionString("MINIDXNN_WEIGHT_MATRIX_ALIGNMENT={}", matrixAlignment));
+  defs.push_back(ex::createOptionString("MINIDXNN_WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT={}", vectorStrideAlignment));
+  defs.push_back(ex::createOptionString("MINIDXNN_BIAS_VECTOR_ALIGNMENT={}", biasAlignment));
 
   // Dispatch configuration
   defs.push_back(ex::createOptionString("MINIDXNN_NUM_THREADS_X={}", kNumThreadsX));
@@ -366,7 +313,8 @@ auto runGpuInference(const MlpConfig<Type>& mlpConfig,
   const std::span mlpData = std::span{mlpConfig.m_layers};
   const bool hasBias = mlpConfig.m_hasBias;
   const size_t numTasks = texture.width() * texture.height();
-  const ex::MatrixLayout weightMatrixLayout = ex::MatrixLayout::ROW_MAJOR;
+  const bool useSoftwareLinalg = options.m_useSoftwareLinalg;
+  ex::MatrixLayout weightMatrixLayout = useSoftwareLinalg ? ex::MatrixLayout::ROW_MAJOR : ex::MatrixLayout::MUL_OPTIMAL;
 
   // Step 1: Create GFX context and compile the compute shader program.
   //   The shader is compiled at runtime with model-specific definitions,
@@ -379,14 +327,30 @@ auto runGpuInference(const MlpConfig<Type>& mlpConfig,
   // Step 2: Upload data to GPU buffers.
   //   Weight matrices and bias vectors are packed with proper alignment required
   //   by dx::linalg cooperative matrix operations on the GPU.
-  std::vector<size_t> matrixSizeList(mlpData.size());
+  std::vector<ex::D3D12MatrixInfo<Type>> matrixInfoList;
+  matrixInfoList.reserve(mlpData.size());
+  for (const auto& layer : mlpData) {
+    ex::D3D12MatrixInfo<Type> info;
+    info.m_srcData = layer.weightData();
+    info.m_rowSize = layer.outputDimension();
+    info.m_columnSize = layer.inputDimension();
+    info.m_layout = weightMatrixLayout;
+    matrixInfoList.push_back(info);
+  }
+  std::vector<ex::D3D12VectorInfo<Type>> vectorInfoList;
+  vectorInfoList.reserve(mlpData.size());
+  for (const auto& layer : mlpData) {
+    ex::D3D12VectorInfo<Type> info;
+    info.m_srcData = layer.biasData();
+    vectorInfoList.push_back(info);
+  }
   std::shared_ptr uvBuffer = ex::createGfxBuffer<Type>(*context, uvData);
   std::shared_ptr outputBuffer = ex::createGfxBuffer<Type>(*context, 2 * numTasks);
-  std::shared_ptr weightBuffer = ex::convertToMatrixBuffer<Type>(*context, mlpData, weightMatrixLayout, matrixSizeList, ex::MATRIX_ALIGNMENT, ex::MATRIX_VECTOR_STRIDE_ALIGNMENT);
-  std::shared_ptr biasBuffer = ex::convertToVectorBuffer<Type>(*context, mlpData, ex::VECTOR_ALIGNMENT);
+  std::shared_ptr weightBuffer = ex::packAsD3D12MatrixBuffer<Type>(*context, matrixInfoList, true);
+  std::shared_ptr biasBuffer = ex::packAsD3D12VectorBuffer<Type>(*context, vectorInfoList);
 
   // Step 3: Configure and dispatch the inference compute kernel.
-  const std::vector definitions = buildKernelDefinitions<Type>(mlpData, numTasks, weightMatrixLayout, options.m_useSoftwareLinalg, hasBias);
+  const std::vector definitions = buildKernelDefinitions<Type>(mlpData, numTasks, matrixInfoList.front().m_layout, matrixInfoList.front().m_alignment, matrixInfoList.front().m_vectorStrideAlignment, vectorInfoList.front().m_alignment, options.m_useSoftwareLinalg, hasBias);
   const ex::OptionString kernelName = ex::createOptionString("inferenceF{}Kernel", 8 * sizeof(Type));
   std::shared_ptr kernel = ex::createGfxComputeKernel(*context, *program, kernelName.data(), definitions);
 
@@ -402,161 +366,24 @@ auto runGpuInference(const MlpConfig<Type>& mlpConfig,
         ex::bind(*biasBuffer, "BiasBuffer"),
       },
       {
-        ex::bind(static_cast<std::int32_t>(matrixSizeList.front()), "TEST_WEIGHT_MATRIX_SIZE_FIRST"),
-        ex::bind(static_cast<std::int32_t>((matrixSizeList.size() > 1) ? matrixSizeList.at(1) : 0), "TEST_WEIGHT_MATRIX_SIZE_HIDDEN"),
+        ex::bind(static_cast<std::int32_t>(matrixInfoList.front().m_dataSize), "TEST_WEIGHT_MATRIX_SIZE_FIRST"),
+        ex::bind(static_cast<std::int32_t>((matrixInfoList.size() > 1) ? matrixInfoList.at(1).m_dataSize : 0), "TEST_WEIGHT_MATRIX_SIZE_HIDDEN"),
       },
       kernelTimeInMs);
-  std::cout << std::format("Inference (shader) time: {:.3f} ms", kernelTimeInMs)
-            << std::endl;
+  std::cout << std::format("Inference (shader) time: {:.3f} ms\n", kernelTimeInMs);
 
   // Step 4: Read back GPU results to CPU and convert to 8-bit grayscale.
   std::shared_ptr staging = ex::createGfxBuffer<Type>(*context, 2 * numTasks, kGfxCpuAccess_Read);
   ex::copyBuffer(*context, *outputBuffer, *staging);
   const std::span output = ex::mapToCpu<Type>(*context, *staging);
-  mapToLdr<Type>(output, texture);
-}
+  ex::mapToLdr<Type>(output, texture);}
 #endif // !MINIDXNN_CPP_FALLBACK_ONLY
 
 // ============================================================================
 // C++ fallback inference (mlp.hlsl compiled as C++)
 // ============================================================================
 
-// Templated forward kernel: delegates to texkernel::inferenceStep from shared HLSL.
-template <ex::Arithmetic Type, uint NUM_LAYERS, int HIDDEN_DIM,
-          typename ActivationHiddenT, typename ActivationLastT>
-void cppFallbackForwardKernel(const ex::PackedMlpBuffers<Type>& packed,
-                              const std::vector<Type>& uvData,
-                              std::vector<Type>& output,
-                              size_t numTasks)
-{
-  ByteAddressBuffer uvBuf{uvData};
-  RWByteAddressBuffer outBuf{output};
-
-  const uint totalTasks = static_cast<uint>(numTasks);
-  const uint numThreads = std::max(1u, std::thread::hardware_concurrency());
-  const uint tasksPerThread = totalTasks / numThreads;
-  const uint remainder = totalTasks % numThreads;
-
-  std::vector<std::thread> threads;
-  threads.reserve(numThreads);
-
-  uint taskStart = 0;
-  for (uint t = 0; t < numThreads; ++t) {
-    const uint taskEnd = taskStart + tasksPerThread + (t < remainder ? 1 : 0);
-    threads.emplace_back([&, taskStart, taskEnd]() {
-      for (uint task = taskStart; task < taskEnd; ++task) {
-        texkernel::inferenceStep<Type, NUM_LAYERS, HIDDEN_DIM,
-            mininn::impl::TypeTraits<Type>::COMPONENT_TYPE,
-            dx::linalg::MATRIX_LAYOUT_ROW_MAJOR,
-            ActivationHiddenT, ActivationLastT,
-            128, 16, 64, true>(
-            task, uvBuf, outBuf, packed.weightBAB(), packed.biasBAB(),
-            packed.matrixSizes, totalTasks);
-      }
-    });
-    taskStart = taskEnd;
-  }
-
-  for (auto& th : threads) {
-    th.join();
-  }
-}
-
-// Dispatch hidden-layer activation type at runtime.
-template <ex::Arithmetic Type, uint NUM_LAYERS, int HIDDEN_DIM>
-bool dispatchActivation(ex::ActivationType hiddenAct,
-                        const ex::PackedMlpBuffers<Type>& packed,
-                        const std::vector<Type>& uvData,
-                        std::vector<Type>& output,
-                        size_t numTasks)
-{
-  // Last activation is always Sigmoid for this example.
-  using Sigmoid = mininn::SigmoidActivation;
-  switch (hiddenAct) {
-    case ex::ActivationType::RELU:
-      cppFallbackForwardKernel<Type, NUM_LAYERS, HIDDEN_DIM, mininn::ReluActivation, Sigmoid>(packed, uvData, output, numTasks);
-      return true;
-    case ex::ActivationType::IDENTITY:
-      cppFallbackForwardKernel<Type, NUM_LAYERS, HIDDEN_DIM, mininn::IdentityActivation, Sigmoid>(packed, uvData, output, numTasks);
-      return true;
-    case ex::ActivationType::SIGMOID:
-      cppFallbackForwardKernel<Type, NUM_LAYERS, HIDDEN_DIM, mininn::SigmoidActivation, Sigmoid>(packed, uvData, output, numTasks);
-      return true;
-    case ex::ActivationType::LEAKY_RELU:
-      cppFallbackForwardKernel<Type, NUM_LAYERS, HIDDEN_DIM, mininn::LeakyReluActivation, Sigmoid>(packed, uvData, output, numTasks);
-      return true;
-    case ex::ActivationType::TANH:
-    default:
-      return false;
-  }
-}
-
-// Dispatch NUM_LAYERS and HIDDEN_DIM at runtime.
-// Supports common MLP configurations used in texture inference.
-template <ex::Arithmetic Type>
-bool dispatchForward(size_t numLayers, size_t hiddenDim,
-                     ex::ActivationType hiddenAct,
-                     const ex::PackedMlpBuffers<Type>& packed,
-                     const std::vector<Type>& uvData,
-                     std::vector<Type>& output,
-                     size_t numTasks)
-{
-  // Macro to reduce boilerplate for each (NUM_LAYERS, HIDDEN_DIM) pair
-  #define DISPATCH_CASE(NL, HD) \
-    if (numLayers == (NL) && hiddenDim == (HD)) \
-      return dispatchActivation<Type, (NL), (HD)>(hiddenAct, packed, uvData, output, numTasks);
-
-  // 2 layers (1 backbone): common small models
-  DISPATCH_CASE(2, 8)   DISPATCH_CASE(2, 16)
-  DISPATCH_CASE(2, 32)  DISPATCH_CASE(2, 64)
-  // 3 layers (2 backbone)
-  DISPATCH_CASE(3, 8)   DISPATCH_CASE(3, 16)
-  DISPATCH_CASE(3, 32)  DISPATCH_CASE(3, 64)
-  // 4 layers (3 backbone)
-  DISPATCH_CASE(4, 16)  DISPATCH_CASE(4, 32)
-  DISPATCH_CASE(4, 64)
-  // 5 layers (4 backbone)
-  DISPATCH_CASE(5, 16)  DISPATCH_CASE(5, 32)
-  DISPATCH_CASE(5, 64)
-
-  #undef DISPATCH_CASE
-  return false;
-}
-
-/*!
-  \brief Run inference using the C++ fallback path (mlp.hlsl compiled as C++).
-
-  Creates ByteAddressBuffers from packed MLP layer data and calls mininn::forward.
-*/
-template <ex::Arithmetic Type>
-auto runCppFallbackInference(const MlpConfig<Type>& mlpConfig,
-                             const std::vector<Type>& uvData,
-                             ex::PixmapU8& texture) -> void
-{
-  const std::span mlpData = std::span{mlpConfig.m_layers};
-  const bool hasBias = mlpConfig.m_hasBias;
-  const size_t numTasks = texture.width() * texture.height();
-  const size_t numLayers = mlpData.size();
-  const size_t hiddenDim = mlpData.front().outputDimension();
-  const auto hiddenAct = mlpData.front().configuration().m_activation;
-
-  ex::PackedMlpBuffers<Type> packed;
-  packed.pack(mlpData, hasBias);
-
-  std::vector<Type> output(numTasks * 2);
-
-  const auto startTime = std::chrono::high_resolution_clock::now();
-  if (!dispatchForward<Type>(numLayers, hiddenDim, hiddenAct, packed, uvData, output, numTasks)) {
-    std::cerr << std::format("[Error] C++ fallback: unsupported MLP config (layers={}, hiddenDim={})\n",
-        numLayers, hiddenDim);
-    std::abort();
-  }
-  const auto endTime = std::chrono::high_resolution_clock::now();
-  const auto elapsedMs = std::chrono::duration<double, std::milli>(endTime - startTime).count();
-  std::cout << std::format("Reconstruction time: {:.3f} ms", elapsedMs) << std::endl;
-
-  mapToLdr<Type>(output, texture);
-}
+#include "cpp_fallback_path.hpp"
 
 // ============================================================================
 
@@ -571,24 +398,24 @@ template <ex::Arithmetic Type>
 auto reconstructTexture(const MlpConfig<Type>& mlpConfig, const CliOptions& options) -> ex::PixmapU8
 {
   ex::PixmapU8 texture{options.m_textureWidth, options.m_textureHeight};
-  const std::vector uvData = createUvData<Type>(texture.width(), texture.height());
+  const std::vector uvData = ex::createUvData<Type>(texture.width(), texture.height());
 
   if (options.m_useReferenceMlpOperations) {
-    std::cout << "Backend: CPU (reference)" << std::endl;
+    std::cout << std::format("Backend: CPU (reference)\n");
     const auto startTime = std::chrono::high_resolution_clock::now();
     const std::vector output = ex::forwardBatch<Type, Type, Type, Type, Type>(uvData, mlpConfig.m_layers);
     const auto endTime = std::chrono::high_resolution_clock::now();
-    const auto elapsedMs = std::chrono::duration<double, std::milli>(endTime - startTime).count();
-    std::cout << std::format("Reconstruction time: {:.3f} ms", elapsedMs) << std::endl;
-    mapToLdr<Type>(output, texture);
+    const double elapsedMs = std::chrono::duration<double, std::milli>(endTime - startTime).count();
+    std::cout << std::format("Reconstruction time: {:.3f} ms\n", elapsedMs);
+    ex::mapToLdr<Type>(output, texture);
   }
   else if (ex::isCppFallbackForced || options.m_useCppFallback) {
-    std::cout << "Backend: C++ fallback" << std::endl;
+    std::cout << std::format("Backend: C++ fallback\n");
     runCppFallbackInference<Type>(mlpConfig, uvData, texture);
   }
 #ifndef MINIDXNN_CPP_FALLBACK_ONLY
   else {
-    std::cout << "Backend: GPU" << std::endl;
+    std::cout << std::format("Backend: GPU\n");
     runGpuInference<Type>(mlpConfig, uvData, options, texture);
   }
 #endif
@@ -618,7 +445,7 @@ auto main(const int argc, const char** argv) -> int
     const std::filesystem::path mlpBinPathFs{options.m_mlpBinPath};
     std::ifstream mlpBin{mlpBinPathFs, std::ios::binary};
     if (!mlpBin.is_open()) {
-      std::cerr << std::format("[Error] Failed to open binary file: {}", mlpBinPathFs.string()) << std::endl;
+      std::cerr << std::format("[Error] Failed to open binary file: {}\n", mlpBinPathFs.string());
       std::abort();
     }
     mlpConfig = loadMlp<DataT>(mlpBin);
@@ -632,14 +459,12 @@ auto main(const int argc, const char** argv) -> int
   {
     std::ofstream textureOut{options.m_outputPath, std::ios::binary};
     if (!textureOut.is_open()) {
-      std::cerr << std::format("[Error] Failed to open output file: {}", options.m_outputPath) << std::endl;
+      std::cerr << std::format("[Error] Failed to open output file: {}\n", options.m_outputPath);
       std::abort();
     }
     ex::writeAsPpm(texture, textureOut);
-    std::cout << std::format("Output image saved to: {}", options.m_outputPath) << std::endl;
+    std::cout << std::format("Output image saved to: {}\n", options.m_outputPath);
   }
-
-  std::cout << std::flush;
 
   return 0;
 }

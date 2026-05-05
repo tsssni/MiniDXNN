@@ -1,7 +1,7 @@
 /*!
   \file mlp.hlsl
   \author Sho Ikeda
-  \brief Header-only HLSL library for MLP forward & backward passes using DX12 Cooperative Vector
+  \brief Header-only HLSL library for MLP forward & backward passes using DX12 LinAlg Matrix
   \copyright Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
   SPDX-License-Identifier: MIT
@@ -9,7 +9,7 @@
   MiniDXNN — a single-header HLSL library that provides:
     - Forward pass (inference) with configurable activations
     - Backward pass (training) with gradient accumulation
-    - Hardware-accelerated matrix-vector operations via dx::linalg Cooperative Vector
+    - Hardware-accelerated matrix-vector operations via dx::linalg LinAlg Matrix
     - Software fallback when MINIDXNN_USE_SOFTWARE_LINALG_IMPL is defined
 
   Usage:
@@ -17,7 +17,7 @@
 
   Preprocessor options (define before including this header):
     MINIDXNN_NO_INCLUDE_DX_LINALG     — skip #include <dx/linalg.h>; you provide it yourself
-    MINIDXNN_USE_SOFTWARE_LINALG_IMPL — use software mat-vec ops instead of Cooperative Vector
+    MINIDXNN_USE_SOFTWARE_LINALG_IMPL — use software mat-vec ops instead of LinAlg Matrix
 
   See docs/mlp_hlsl.md for the full API reference.
 */
@@ -27,14 +27,14 @@
 
 // C++ reference qualifier for out/inout parameters
 #ifdef __cplusplus
-#define MINIDXNN_IN(...) const __VA_ARGS__ &
-#define MINIDXNN_OUT(...) __VA_ARGS__ &
-#define MINIDXNN_INOUT(...) __VA_ARGS__ &
-#else
-#define MINIDXNN_IN(...) in const __VA_ARGS__
-#define MINIDXNN_OUT(...) out __VA_ARGS__
-#define MINIDXNN_INOUT(...) inout __VA_ARGS__
-#endif
+#define __MINIDXNN_IN__(...) const __VA_ARGS__ &
+#define __MINIDXNN_OUT__(...) __VA_ARGS__ &
+#define __MINIDXNN_INOUT__(...) __VA_ARGS__ &
+#else // __cplusplus
+#define __MINIDXNN_IN__(...) in const __VA_ARGS__
+#define __MINIDXNN_OUT__(...) out __VA_ARGS__
+#define __MINIDXNN_INOUT__(...) inout __VA_ARGS__
+#endif // __cplusplus
 
 #ifndef MINIDXNN_NO_INCLUDE_DX_LINALG
 #include <dx/linalg.h>
@@ -76,42 +76,42 @@ template <// Layer configurations
           // Weight
           CacheMethod WEIGHT_CACHE_METHOD,
           typename WeightBufferT,
-          dx::linalg::DataType WEIGHT_ELEM_TYPE,
-          dx::linalg::MatrixLayout WEIGHT_MATRIX_LAYOUT,
+          dx::linalg::ComponentEnum WEIGHT_ELEM_TYPE,
+          dx::linalg::MatrixLayoutEnum WEIGHT_MATRIX_LAYOUT,
           // Weight gradient cache
           CacheMethod WEIGHT_GRADIENT_CACHE_METHOD = CacheMethod::NO_CACHE,
           typename WeightGradientCacheBufferT = WeightBufferT,
-          dx::linalg::DataType WEIGHT_GRADIENT_CACHE_ELEM_TYPE = WEIGHT_ELEM_TYPE,
+          dx::linalg::ComponentEnum WEIGHT_GRADIENT_CACHE_ELEM_TYPE = WEIGHT_ELEM_TYPE,
           // Bias
           CacheMethod BIAS_CACHE_METHOD = CacheMethod::NO_CACHE,
           typename BiasBufferT = WeightBufferT,
-          dx::linalg::DataType BIAS_ELEM_TYPE = WEIGHT_ELEM_TYPE,
+          dx::linalg::ComponentEnum BIAS_ELEM_TYPE = WEIGHT_ELEM_TYPE,
           // Bias gradient cache
           CacheMethod BIAS_GRADIENT_CACHE_METHOD = CacheMethod::NO_CACHE,
           typename BiasGradientCacheBufferT = BiasBufferT,
-          dx::linalg::DataType BIAS_GRADIENT_CACHE_ELEM_TYPE = BIAS_ELEM_TYPE,
+          dx::linalg::ComponentEnum BIAS_GRADIENT_CACHE_ELEM_TYPE = BIAS_ELEM_TYPE,
           // Pre-activation
-          dx::linalg::DataType ACCUMULATOR_ELEM_TYPE = WEIGHT_ELEM_TYPE,
+          dx::linalg::ComponentEnum ACCUMULATOR_ELEM_TYPE = WEIGHT_ELEM_TYPE,
           CacheMethod LOGITS_CACHE_METHOD = CacheMethod::NO_CACHE,
           typename LogitsCacheBufferT = WeightBufferT,
-          dx::linalg::DataType LOGITS_CACHE_ELEM_TYPE = WEIGHT_ELEM_TYPE,
+          dx::linalg::ComponentEnum LOGITS_CACHE_ELEM_TYPE = WEIGHT_ELEM_TYPE,
           // Activation functions
           typename ActivationHiddenT = IdentityActivation,
           typename ActivationLastT = IdentityActivation,
-          dx::linalg::DataType ACTIVATION_ELEM_TYPE = WEIGHT_ELEM_TYPE,
+          dx::linalg::ComponentEnum ACTIVATION_ELEM_TYPE = WEIGHT_ELEM_TYPE,
           // Alignments
           uint WEIGHT_MATRIX_ALIGNMENT = 128,
           uint WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT = 16,
-          uint BIAS_VECTOR_ALIGNMENT = 64>
+          uint BIAS_VECTOR_ALIGNMENT = 128>
 struct LayerDataRefImpl
 {
   static const bool HAS_BIAS = BIAS_CACHE_METHOD == CacheMethod::CACHE;
   static const uint NUM_BACKBONE_LAYERS = NUM_LAYERS - 1;
 
 
-  template <CacheMethod CACHE_METHOD, typename BufferT, dx::linalg::DataType ELEM_TYPE, dx::linalg::MatrixLayout LAYOUT>
+  template <CacheMethod CACHE_METHOD, typename BufferT, dx::linalg::ComponentEnum ELEM_TYPE, dx::linalg::MatrixLayoutEnum LAYOUT>
   using MatrixRefT = typename MatrixData<CACHE_METHOD>::template Ref<BufferT, ELEM_TYPE, LAYOUT, NUM_LAYERS, WEIGHT_MATRIX_ALIGNMENT, WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT>;
-  template <CacheMethod CACHE_METHOD, typename BufferT, dx::linalg::DataType ELEM_TYPE>
+  template <CacheMethod CACHE_METHOD, typename BufferT, dx::linalg::ComponentEnum ELEM_TYPE>
   using VectorRefT = typename VectorData<CACHE_METHOD>::template Ref<BufferT, ELEM_TYPE, NUM_LAYERS, HIDDEN_LAYER_DIM, BIAS_VECTOR_ALIGNMENT>;
 
 
@@ -165,22 +165,22 @@ template <// Layer configurations
           int HIDDEN_LAYER_DIM,
           // Weight
           typename WeightBufferT,
-          dx::linalg::DataType WEIGHT_ELEM_TYPE,
-          dx::linalg::MatrixLayout WEIGHT_MATRIX_LAYOUT,
+          dx::linalg::ComponentEnum WEIGHT_ELEM_TYPE,
+          dx::linalg::MatrixLayoutEnum WEIGHT_MATRIX_LAYOUT,
           // Bias
           bool HAS_BIAS,
           typename BiasBufferT,
-          dx::linalg::DataType BIAS_ELEM_TYPE = WEIGHT_ELEM_TYPE,
+          dx::linalg::ComponentEnum BIAS_ELEM_TYPE = WEIGHT_ELEM_TYPE,
           // Pre-activation
-          dx::linalg::DataType ACCUMULATOR_ELEM_TYPE = WEIGHT_ELEM_TYPE,
+          dx::linalg::ComponentEnum ACCUMULATOR_ELEM_TYPE = WEIGHT_ELEM_TYPE,
           // Activation functions
           typename ActivationHiddenT = IdentityActivation,
           typename ActivationLastT = IdentityActivation,
-          dx::linalg::DataType ACTIVATION_ELEM_TYPE = WEIGHT_ELEM_TYPE,
+          dx::linalg::ComponentEnum ACTIVATION_ELEM_TYPE = WEIGHT_ELEM_TYPE,
           // Alignments
           uint WEIGHT_MATRIX_ALIGNMENT = 128,
           uint WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT = 16,
-          uint BIAS_VECTOR_ALIGNMENT = 64>
+          uint BIAS_VECTOR_ALIGNMENT = 128>
 using InferenceLayerDataRefImpl = LayerDataRefImpl<NUM_LAYERS, HIDDEN_LAYER_DIM, CacheMethod::CACHE, WeightBufferT, WEIGHT_ELEM_TYPE, WEIGHT_MATRIX_LAYOUT, CacheMethod::NO_CACHE, WeightBufferT, WEIGHT_ELEM_TYPE, HAS_BIAS ? CacheMethod::CACHE : CacheMethod::NO_CACHE, BiasBufferT, BIAS_ELEM_TYPE, CacheMethod::NO_CACHE, BiasBufferT, BIAS_ELEM_TYPE, ACCUMULATOR_ELEM_TYPE, CacheMethod::NO_CACHE, WeightBufferT, ACCUMULATOR_ELEM_TYPE, ActivationHiddenT, ActivationLastT, ACTIVATION_ELEM_TYPE, WEIGHT_MATRIX_ALIGNMENT, WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT, BIAS_VECTOR_ALIGNMENT>;
 
 // InferenceLayerDataRef: read-only inference with bias (ByteAddressBuffer).
@@ -188,20 +188,20 @@ template <// Layer configurations
           uint NUM_LAYERS,
           int HIDDEN_LAYER_DIM,
           // Weight
-          dx::linalg::DataType WEIGHT_ELEM_TYPE,
-          dx::linalg::MatrixLayout WEIGHT_MATRIX_LAYOUT,
+          dx::linalg::ComponentEnum WEIGHT_ELEM_TYPE,
+          dx::linalg::MatrixLayoutEnum WEIGHT_MATRIX_LAYOUT,
           // Bias
-          dx::linalg::DataType BIAS_ELEM_TYPE = WEIGHT_ELEM_TYPE,
+          dx::linalg::ComponentEnum BIAS_ELEM_TYPE = WEIGHT_ELEM_TYPE,
           // Pre-activation
-          dx::linalg::DataType ACCUMULATOR_ELEM_TYPE = WEIGHT_ELEM_TYPE,
+          dx::linalg::ComponentEnum ACCUMULATOR_ELEM_TYPE = WEIGHT_ELEM_TYPE,
           // Activation functions
           typename ActivationHiddenT = IdentityActivation,
           typename ActivationLastT = IdentityActivation,
-          dx::linalg::DataType ACTIVATION_ELEM_TYPE = WEIGHT_ELEM_TYPE,
+          dx::linalg::ComponentEnum ACTIVATION_ELEM_TYPE = WEIGHT_ELEM_TYPE,
           // Alignments
           uint WEIGHT_MATRIX_ALIGNMENT = 128,
           uint WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT = 16,
-          uint BIAS_VECTOR_ALIGNMENT = 64>
+          uint BIAS_VECTOR_ALIGNMENT = 128>
 using InferenceLayerDataRef = InferenceLayerDataRefImpl<NUM_LAYERS, HIDDEN_LAYER_DIM, ByteAddressBuffer, WEIGHT_ELEM_TYPE, WEIGHT_MATRIX_LAYOUT, true, ByteAddressBuffer, BIAS_ELEM_TYPE, ACCUMULATOR_ELEM_TYPE, ActivationHiddenT, ActivationLastT, ACTIVATION_ELEM_TYPE, WEIGHT_MATRIX_ALIGNMENT, WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT, BIAS_VECTOR_ALIGNMENT>;
 
 // InferenceLayerDataRefNoBias: read-only inference without bias (ByteAddressBuffer).
@@ -209,18 +209,18 @@ template <// Layer configurations
           uint NUM_LAYERS,
           int HIDDEN_LAYER_DIM,
           // Weight
-          dx::linalg::DataType WEIGHT_ELEM_TYPE,
-          dx::linalg::MatrixLayout WEIGHT_MATRIX_LAYOUT,
+          dx::linalg::ComponentEnum WEIGHT_ELEM_TYPE,
+          dx::linalg::MatrixLayoutEnum WEIGHT_MATRIX_LAYOUT,
           // Pre-activation
-          dx::linalg::DataType ACCUMULATOR_ELEM_TYPE = WEIGHT_ELEM_TYPE,
+          dx::linalg::ComponentEnum ACCUMULATOR_ELEM_TYPE = WEIGHT_ELEM_TYPE,
           // Activation functions
           typename ActivationHiddenT = IdentityActivation,
           typename ActivationLastT = IdentityActivation,
-          dx::linalg::DataType ACTIVATION_ELEM_TYPE = WEIGHT_ELEM_TYPE,
+          dx::linalg::ComponentEnum ACTIVATION_ELEM_TYPE = WEIGHT_ELEM_TYPE,
           // Alignments
           uint WEIGHT_MATRIX_ALIGNMENT = 128,
           uint WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT = 16,
-          uint BIAS_VECTOR_ALIGNMENT = 64>
+          uint BIAS_VECTOR_ALIGNMENT = 128>
 using InferenceLayerDataRefNoBias = InferenceLayerDataRefImpl<NUM_LAYERS, HIDDEN_LAYER_DIM, ByteAddressBuffer, WEIGHT_ELEM_TYPE, WEIGHT_MATRIX_LAYOUT, false, ByteAddressBuffer, WEIGHT_ELEM_TYPE, ACCUMULATOR_ELEM_TYPE, ActivationHiddenT, ActivationLastT, ACTIVATION_ELEM_TYPE, WEIGHT_MATRIX_ALIGNMENT, WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT, BIAS_VECTOR_ALIGNMENT>;
 
 // RWInferenceLayerDataRef: read-write inference with bias (RWByteAddressBuffer).
@@ -228,20 +228,20 @@ template <// Layer configurations
           uint NUM_LAYERS,
           int HIDDEN_LAYER_DIM,
           // Weight
-          dx::linalg::DataType WEIGHT_ELEM_TYPE,
-          dx::linalg::MatrixLayout WEIGHT_MATRIX_LAYOUT,
+          dx::linalg::ComponentEnum WEIGHT_ELEM_TYPE,
+          dx::linalg::MatrixLayoutEnum WEIGHT_MATRIX_LAYOUT,
           // Bias
-          dx::linalg::DataType BIAS_ELEM_TYPE = WEIGHT_ELEM_TYPE,
+          dx::linalg::ComponentEnum BIAS_ELEM_TYPE = WEIGHT_ELEM_TYPE,
           // Pre-activation
-          dx::linalg::DataType ACCUMULATOR_ELEM_TYPE = WEIGHT_ELEM_TYPE,
+          dx::linalg::ComponentEnum ACCUMULATOR_ELEM_TYPE = WEIGHT_ELEM_TYPE,
           // Activation functions
           typename ActivationHiddenT = IdentityActivation,
           typename ActivationLastT = IdentityActivation,
-          dx::linalg::DataType ACTIVATION_ELEM_TYPE = WEIGHT_ELEM_TYPE,
+          dx::linalg::ComponentEnum ACTIVATION_ELEM_TYPE = WEIGHT_ELEM_TYPE,
           // Alignments
           uint WEIGHT_MATRIX_ALIGNMENT = 128,
           uint WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT = 16,
-          uint BIAS_VECTOR_ALIGNMENT = 64>
+          uint BIAS_VECTOR_ALIGNMENT = 128>
 using RWInferenceLayerDataRef = InferenceLayerDataRefImpl<NUM_LAYERS, HIDDEN_LAYER_DIM, RWByteAddressBuffer, WEIGHT_ELEM_TYPE, WEIGHT_MATRIX_LAYOUT, true, RWByteAddressBuffer, BIAS_ELEM_TYPE, ACCUMULATOR_ELEM_TYPE, ActivationHiddenT, ActivationLastT, ACTIVATION_ELEM_TYPE, WEIGHT_MATRIX_ALIGNMENT, WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT, BIAS_VECTOR_ALIGNMENT>;
 
 // RWInferenceLayerDataRefNoBias: read-write inference without bias (RWByteAddressBuffer).
@@ -249,18 +249,18 @@ template <// Layer configurations
           uint NUM_LAYERS,
           int HIDDEN_LAYER_DIM,
           // Weight
-          dx::linalg::DataType WEIGHT_ELEM_TYPE,
-          dx::linalg::MatrixLayout WEIGHT_MATRIX_LAYOUT,
+          dx::linalg::ComponentEnum WEIGHT_ELEM_TYPE,
+          dx::linalg::MatrixLayoutEnum WEIGHT_MATRIX_LAYOUT,
           // Pre-activation
-          dx::linalg::DataType ACCUMULATOR_ELEM_TYPE = WEIGHT_ELEM_TYPE,
+          dx::linalg::ComponentEnum ACCUMULATOR_ELEM_TYPE = WEIGHT_ELEM_TYPE,
           // Activation functions
           typename ActivationHiddenT = IdentityActivation,
           typename ActivationLastT = IdentityActivation,
-          dx::linalg::DataType ACTIVATION_ELEM_TYPE = WEIGHT_ELEM_TYPE,
+          dx::linalg::ComponentEnum ACTIVATION_ELEM_TYPE = WEIGHT_ELEM_TYPE,
           // Alignments
           uint WEIGHT_MATRIX_ALIGNMENT = 128,
           uint WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT = 16,
-          uint BIAS_VECTOR_ALIGNMENT = 64>
+          uint BIAS_VECTOR_ALIGNMENT = 128>
 using RWInferenceLayerDataRefNoBias = InferenceLayerDataRefImpl<NUM_LAYERS, HIDDEN_LAYER_DIM, RWByteAddressBuffer, WEIGHT_ELEM_TYPE, WEIGHT_MATRIX_LAYOUT, false, RWByteAddressBuffer, WEIGHT_ELEM_TYPE, ACCUMULATOR_ELEM_TYPE, ActivationHiddenT, ActivationLastT, ACTIVATION_ELEM_TYPE, WEIGHT_MATRIX_ALIGNMENT, WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT, BIAS_VECTOR_ALIGNMENT>;
 
 // ============================================================================
@@ -277,27 +277,27 @@ template <// Layer configurations
           int HIDDEN_LAYER_DIM,
           // Weight
           typename WeightBufferT,
-          dx::linalg::DataType WEIGHT_ELEM_TYPE,
-          dx::linalg::MatrixLayout WEIGHT_MATRIX_LAYOUT,
+          dx::linalg::ComponentEnum WEIGHT_ELEM_TYPE,
+          dx::linalg::MatrixLayoutEnum WEIGHT_MATRIX_LAYOUT,
           // Weight gradient cache
-          dx::linalg::DataType WEIGHT_GRADIENT_CACHE_ELEM_TYPE,
+          dx::linalg::ComponentEnum WEIGHT_GRADIENT_CACHE_ELEM_TYPE,
           // Bias
           bool HAS_BIAS,
           typename BiasBufferT,
-          dx::linalg::DataType BIAS_ELEM_TYPE = WEIGHT_ELEM_TYPE,
+          dx::linalg::ComponentEnum BIAS_ELEM_TYPE = WEIGHT_ELEM_TYPE,
           // Bias gradient cache
-          dx::linalg::DataType BIAS_GRADIENT_CACHE_ELEM_TYPE = BIAS_ELEM_TYPE,
+          dx::linalg::ComponentEnum BIAS_GRADIENT_CACHE_ELEM_TYPE = BIAS_ELEM_TYPE,
           // Pre-activation
-          dx::linalg::DataType ACCUMULATOR_ELEM_TYPE = WEIGHT_ELEM_TYPE,
-          dx::linalg::DataType LOGITS_CACHE_ELEM_TYPE = WEIGHT_ELEM_TYPE,
+          dx::linalg::ComponentEnum ACCUMULATOR_ELEM_TYPE = WEIGHT_ELEM_TYPE,
+          dx::linalg::ComponentEnum LOGITS_CACHE_ELEM_TYPE = WEIGHT_ELEM_TYPE,
           // Activation functions
           typename ActivationHiddenT = IdentityActivation,
           typename ActivationLastT = IdentityActivation,
-          dx::linalg::DataType ACTIVATION_ELEM_TYPE = WEIGHT_ELEM_TYPE,
+          dx::linalg::ComponentEnum ACTIVATION_ELEM_TYPE = WEIGHT_ELEM_TYPE,
           // Alignments
           uint WEIGHT_MATRIX_ALIGNMENT = 128,
           uint WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT = 16,
-          uint BIAS_VECTOR_ALIGNMENT = 64>
+          uint BIAS_VECTOR_ALIGNMENT = 128>
 using TrainingLayerDataRefImpl = LayerDataRefImpl<NUM_LAYERS, HIDDEN_LAYER_DIM, CacheMethod::CACHE, WeightBufferT, WEIGHT_ELEM_TYPE, WEIGHT_MATRIX_LAYOUT, CacheMethod::CACHE, RWByteAddressBuffer, WEIGHT_GRADIENT_CACHE_ELEM_TYPE, HAS_BIAS ? CacheMethod::CACHE : CacheMethod::NO_CACHE, BiasBufferT, BIAS_ELEM_TYPE, HAS_BIAS ? CacheMethod::CACHE : CacheMethod::NO_CACHE, RWByteAddressBuffer, BIAS_GRADIENT_CACHE_ELEM_TYPE, ACCUMULATOR_ELEM_TYPE, CacheMethod::CACHE, RWByteAddressBuffer, LOGITS_CACHE_ELEM_TYPE, ActivationHiddenT, ActivationLastT, ACTIVATION_ELEM_TYPE, WEIGHT_MATRIX_ALIGNMENT, WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT, BIAS_VECTOR_ALIGNMENT>;
 
 // TrainingLayerDataRef: read-only weights with bias, RW gradient/logits caches (ByteAddressBuffer).
@@ -305,25 +305,25 @@ template <// Layer configurations
           uint NUM_LAYERS,
           int HIDDEN_LAYER_DIM,
           // Weight
-          dx::linalg::DataType WEIGHT_ELEM_TYPE,
-          dx::linalg::MatrixLayout WEIGHT_MATRIX_LAYOUT,
+          dx::linalg::ComponentEnum WEIGHT_ELEM_TYPE,
+          dx::linalg::MatrixLayoutEnum WEIGHT_MATRIX_LAYOUT,
           // Weight gradient cache
-          dx::linalg::DataType WEIGHT_GRADIENT_CACHE_ELEM_TYPE,
+          dx::linalg::ComponentEnum WEIGHT_GRADIENT_CACHE_ELEM_TYPE,
           // Bias
-          dx::linalg::DataType BIAS_ELEM_TYPE = WEIGHT_ELEM_TYPE,
+          dx::linalg::ComponentEnum BIAS_ELEM_TYPE = WEIGHT_ELEM_TYPE,
           // Bias gradient cache
-          dx::linalg::DataType BIAS_GRADIENT_CACHE_ELEM_TYPE = BIAS_ELEM_TYPE,
+          dx::linalg::ComponentEnum BIAS_GRADIENT_CACHE_ELEM_TYPE = BIAS_ELEM_TYPE,
           // Pre-activation
-          dx::linalg::DataType ACCUMULATOR_ELEM_TYPE = WEIGHT_ELEM_TYPE,
-          dx::linalg::DataType LOGITS_CACHE_ELEM_TYPE = WEIGHT_ELEM_TYPE,
+          dx::linalg::ComponentEnum ACCUMULATOR_ELEM_TYPE = WEIGHT_ELEM_TYPE,
+          dx::linalg::ComponentEnum LOGITS_CACHE_ELEM_TYPE = WEIGHT_ELEM_TYPE,
           // Activation functions
           typename ActivationHiddenT = IdentityActivation,
           typename ActivationLastT = IdentityActivation,
-          dx::linalg::DataType ACTIVATION_ELEM_TYPE = WEIGHT_ELEM_TYPE,
+          dx::linalg::ComponentEnum ACTIVATION_ELEM_TYPE = WEIGHT_ELEM_TYPE,
           // Alignments
           uint WEIGHT_MATRIX_ALIGNMENT = 128,
           uint WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT = 16,
-          uint BIAS_VECTOR_ALIGNMENT = 64>
+          uint BIAS_VECTOR_ALIGNMENT = 128>
 using TrainingLayerDataRef = TrainingLayerDataRefImpl<NUM_LAYERS, HIDDEN_LAYER_DIM, ByteAddressBuffer, WEIGHT_ELEM_TYPE, WEIGHT_MATRIX_LAYOUT, WEIGHT_GRADIENT_CACHE_ELEM_TYPE, true, ByteAddressBuffer, BIAS_ELEM_TYPE, BIAS_GRADIENT_CACHE_ELEM_TYPE, ACCUMULATOR_ELEM_TYPE, LOGITS_CACHE_ELEM_TYPE, ActivationHiddenT, ActivationLastT, ACTIVATION_ELEM_TYPE, WEIGHT_MATRIX_ALIGNMENT, WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT, BIAS_VECTOR_ALIGNMENT>;
 
 // TrainingLayerDataRefNoBias: training without bias.
@@ -331,21 +331,21 @@ template <// Layer configurations
           uint NUM_LAYERS,
           int HIDDEN_LAYER_DIM,
           // Weight
-          dx::linalg::DataType WEIGHT_ELEM_TYPE,
-          dx::linalg::MatrixLayout WEIGHT_MATRIX_LAYOUT,
+          dx::linalg::ComponentEnum WEIGHT_ELEM_TYPE,
+          dx::linalg::MatrixLayoutEnum WEIGHT_MATRIX_LAYOUT,
           // Weight gradient cache
-          dx::linalg::DataType WEIGHT_GRADIENT_CACHE_ELEM_TYPE,
+          dx::linalg::ComponentEnum WEIGHT_GRADIENT_CACHE_ELEM_TYPE,
           // Pre-activation
-          dx::linalg::DataType ACCUMULATOR_ELEM_TYPE = WEIGHT_ELEM_TYPE,
-          dx::linalg::DataType LOGITS_CACHE_ELEM_TYPE = WEIGHT_ELEM_TYPE,
+          dx::linalg::ComponentEnum ACCUMULATOR_ELEM_TYPE = WEIGHT_ELEM_TYPE,
+          dx::linalg::ComponentEnum LOGITS_CACHE_ELEM_TYPE = WEIGHT_ELEM_TYPE,
           // Activation functions
           typename ActivationHiddenT = IdentityActivation,
           typename ActivationLastT = IdentityActivation,
-          dx::linalg::DataType ACTIVATION_ELEM_TYPE = WEIGHT_ELEM_TYPE,
+          dx::linalg::ComponentEnum ACTIVATION_ELEM_TYPE = WEIGHT_ELEM_TYPE,
           // Alignments
           uint WEIGHT_MATRIX_ALIGNMENT = 128,
           uint WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT = 16,
-          uint BIAS_VECTOR_ALIGNMENT = 64>
+          uint BIAS_VECTOR_ALIGNMENT = 128>
 using TrainingLayerDataRefNoBias = TrainingLayerDataRefImpl<NUM_LAYERS, HIDDEN_LAYER_DIM, ByteAddressBuffer, WEIGHT_ELEM_TYPE, WEIGHT_MATRIX_LAYOUT, WEIGHT_GRADIENT_CACHE_ELEM_TYPE, false, ByteAddressBuffer, WEIGHT_ELEM_TYPE, WEIGHT_GRADIENT_CACHE_ELEM_TYPE, ACCUMULATOR_ELEM_TYPE, LOGITS_CACHE_ELEM_TYPE, ActivationHiddenT, ActivationLastT, ACTIVATION_ELEM_TYPE, WEIGHT_MATRIX_ALIGNMENT, WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT, BIAS_VECTOR_ALIGNMENT>;
 
 
@@ -368,36 +368,36 @@ template <// Output
           int HIDDEN_LAYER_DIM,
           // Weight
           typename WeightBufferT,
-          dx::linalg::DataType WEIGHT_ELEM_TYPE,
-          dx::linalg::MatrixLayout WEIGHT_MATRIX_LAYOUT,
+          dx::linalg::ComponentEnum WEIGHT_ELEM_TYPE,
+          dx::linalg::MatrixLayoutEnum WEIGHT_MATRIX_LAYOUT,
           // Weight gradient cache
           CacheMethod WEIGHT_GRADIENT_CACHE_METHOD,
           typename WeightGradientCacheBufferT,
-          dx::linalg::DataType WEIGHT_GRADIENT_CACHE_ELEM_TYPE,
+          dx::linalg::ComponentEnum WEIGHT_GRADIENT_CACHE_ELEM_TYPE,
           // Bias
           CacheMethod BIAS_CACHE_METHOD,
           typename BiasBufferT,
-          dx::linalg::DataType BIAS_ELEM_TYPE,
+          dx::linalg::ComponentEnum BIAS_ELEM_TYPE,
           // Bias gradient cache
           CacheMethod BIAS_GRADIENT_CACHE_METHOD,
           typename BiasGradientCacheBufferT,
-          dx::linalg::DataType BIAS_GRADIENT_CACHE_ELEM_TYPE,
+          dx::linalg::ComponentEnum BIAS_GRADIENT_CACHE_ELEM_TYPE,
           // Pre-activation
-          dx::linalg::DataType ACCUMULATOR_ELEM_TYPE,
+          dx::linalg::ComponentEnum ACCUMULATOR_ELEM_TYPE,
           CacheMethod LOGITS_CACHE_METHOD,
           typename LogitsCacheBufferT,
-          dx::linalg::DataType LOGITS_CACHE_ELEM_TYPE,
+          dx::linalg::ComponentEnum LOGITS_CACHE_ELEM_TYPE,
           // Activation functions
           typename ActivationHiddenT,
           typename ActivationLastT,
-          dx::linalg::DataType ACTIVATION_ELEM_TYPE,
+          dx::linalg::ComponentEnum ACTIVATION_ELEM_TYPE,
           // Alignments
           uint WEIGHT_MATRIX_ALIGNMENT,
           uint WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT,
           uint BIAS_VECTOR_ALIGNMENT>
-void forward(MINIDXNN_OUT(vector<OutputElemT, OUTPUT_DIM>) output,
-             MINIDXNN_IN(vector<InputElemT, INPUT_DIM>) input,
-             MINIDXNN_INOUT(LayerDataRefImpl<NUM_LAYERS, HIDDEN_LAYER_DIM, CacheMethod::CACHE, WeightBufferT, WEIGHT_ELEM_TYPE, WEIGHT_MATRIX_LAYOUT, WEIGHT_GRADIENT_CACHE_METHOD, WeightGradientCacheBufferT, WEIGHT_GRADIENT_CACHE_ELEM_TYPE, BIAS_CACHE_METHOD, BiasBufferT, BIAS_ELEM_TYPE, BIAS_GRADIENT_CACHE_METHOD, BiasGradientCacheBufferT, BIAS_GRADIENT_CACHE_ELEM_TYPE, ACCUMULATOR_ELEM_TYPE, LOGITS_CACHE_METHOD, LogitsCacheBufferT, LOGITS_CACHE_ELEM_TYPE, ActivationHiddenT, ActivationLastT, ACTIVATION_ELEM_TYPE, WEIGHT_MATRIX_ALIGNMENT, WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT, BIAS_VECTOR_ALIGNMENT>) layerData);
+void forward(__MINIDXNN_OUT__(vector<OutputElemT, OUTPUT_DIM>) output,
+             __MINIDXNN_IN__(vector<InputElemT, INPUT_DIM>) input,
+             __MINIDXNN_INOUT__(LayerDataRefImpl<NUM_LAYERS, HIDDEN_LAYER_DIM, CacheMethod::CACHE, WeightBufferT, WEIGHT_ELEM_TYPE, WEIGHT_MATRIX_LAYOUT, WEIGHT_GRADIENT_CACHE_METHOD, WeightGradientCacheBufferT, WEIGHT_GRADIENT_CACHE_ELEM_TYPE, BIAS_CACHE_METHOD, BiasBufferT, BIAS_ELEM_TYPE, BIAS_GRADIENT_CACHE_METHOD, BiasGradientCacheBufferT, BIAS_GRADIENT_CACHE_ELEM_TYPE, ACCUMULATOR_ELEM_TYPE, LOGITS_CACHE_METHOD, LogitsCacheBufferT, LOGITS_CACHE_ELEM_TYPE, ActivationHiddenT, ActivationLastT, ACTIVATION_ELEM_TYPE, WEIGHT_MATRIX_ALIGNMENT, WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT, BIAS_VECTOR_ALIGNMENT>) layerData);
 
 template <// Output
           typename OutputElemT,
@@ -410,37 +410,37 @@ template <// Output
           int HIDDEN_LAYER_DIM,
           // Weight
           typename WeightBufferT,
-          dx::linalg::DataType WEIGHT_ELEM_TYPE,
-          dx::linalg::MatrixLayout WEIGHT_MATRIX_LAYOUT,
+          dx::linalg::ComponentEnum WEIGHT_ELEM_TYPE,
+          dx::linalg::MatrixLayoutEnum WEIGHT_MATRIX_LAYOUT,
           // Weight gradient cache
           CacheMethod WEIGHT_GRADIENT_CACHE_METHOD,
           typename WeightGradientCacheBufferT,
-          dx::linalg::DataType WEIGHT_GRADIENT_CACHE_ELEM_TYPE,
+          dx::linalg::ComponentEnum WEIGHT_GRADIENT_CACHE_ELEM_TYPE,
           // Bias
           CacheMethod BIAS_CACHE_METHOD,
           typename BiasBufferT,
-          dx::linalg::DataType BIAS_ELEM_TYPE,
+          dx::linalg::ComponentEnum BIAS_ELEM_TYPE,
           // Bias gradient cache
           CacheMethod BIAS_GRADIENT_CACHE_METHOD,
           typename BiasGradientCacheBufferT,
-          dx::linalg::DataType BIAS_GRADIENT_CACHE_ELEM_TYPE,
+          dx::linalg::ComponentEnum BIAS_GRADIENT_CACHE_ELEM_TYPE,
           // Pre-activation
-          dx::linalg::DataType ACCUMULATOR_ELEM_TYPE,
+          dx::linalg::ComponentEnum ACCUMULATOR_ELEM_TYPE,
           CacheMethod LOGITS_CACHE_METHOD,
           typename LogitsCacheBufferT,
-          dx::linalg::DataType LOGITS_CACHE_ELEM_TYPE,
+          dx::linalg::ComponentEnum LOGITS_CACHE_ELEM_TYPE,
           // Activation functions
           typename ActivationHiddenT,
           typename ActivationLastT,
-          dx::linalg::DataType ACTIVATION_ELEM_TYPE,
+          dx::linalg::ComponentEnum ACTIVATION_ELEM_TYPE,
           // Alignments
           uint WEIGHT_MATRIX_ALIGNMENT,
           uint WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT,
           uint BIAS_VECTOR_ALIGNMENT>
 vector<OutputElemT, INPUT_DIM>
-backward(MINIDXNN_IN(vector<OutputElemT, OUTPUT_DIM>) downstreamGrad,
-         MINIDXNN_IN(vector<InputElemT, INPUT_DIM>) input,
-         MINIDXNN_INOUT(LayerDataRefImpl<NUM_LAYERS, HIDDEN_LAYER_DIM, CacheMethod::CACHE, WeightBufferT, WEIGHT_ELEM_TYPE, WEIGHT_MATRIX_LAYOUT, WEIGHT_GRADIENT_CACHE_METHOD, WeightGradientCacheBufferT, WEIGHT_GRADIENT_CACHE_ELEM_TYPE, BIAS_CACHE_METHOD, BiasBufferT, BIAS_ELEM_TYPE, BIAS_GRADIENT_CACHE_METHOD, BiasGradientCacheBufferT, BIAS_GRADIENT_CACHE_ELEM_TYPE, ACCUMULATOR_ELEM_TYPE, LOGITS_CACHE_METHOD, LogitsCacheBufferT, LOGITS_CACHE_ELEM_TYPE, ActivationHiddenT, ActivationLastT, ACTIVATION_ELEM_TYPE, WEIGHT_MATRIX_ALIGNMENT, WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT, BIAS_VECTOR_ALIGNMENT>) layerData);
+backward(__MINIDXNN_IN__(vector<OutputElemT, OUTPUT_DIM>) downstreamGrad,
+         __MINIDXNN_IN__(vector<InputElemT, INPUT_DIM>) input,
+         __MINIDXNN_INOUT__(LayerDataRefImpl<NUM_LAYERS, HIDDEN_LAYER_DIM, CacheMethod::CACHE, WeightBufferT, WEIGHT_ELEM_TYPE, WEIGHT_MATRIX_LAYOUT, WEIGHT_GRADIENT_CACHE_METHOD, WeightGradientCacheBufferT, WEIGHT_GRADIENT_CACHE_ELEM_TYPE, BIAS_CACHE_METHOD, BiasBufferT, BIAS_ELEM_TYPE, BIAS_GRADIENT_CACHE_METHOD, BiasGradientCacheBufferT, BIAS_GRADIENT_CACHE_ELEM_TYPE, ACCUMULATOR_ELEM_TYPE, LOGITS_CACHE_METHOD, LogitsCacheBufferT, LOGITS_CACHE_ELEM_TYPE, ActivationHiddenT, ActivationLastT, ACTIVATION_ELEM_TYPE, WEIGHT_MATRIX_ALIGNMENT, WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT, BIAS_VECTOR_ALIGNMENT>) layerData);
 
 
 // ============================================================================
@@ -453,29 +453,31 @@ backward(MINIDXNN_IN(vector<OutputElemT, OUTPUT_DIM>) downstreamGrad,
 namespace impl {
 
 // ----------------------------------------------------------------------------
-// TypeTraits / ComponentTypeTraits — HLSL scalar ↔ dx::linalg::DataType mapping
+// TypeTraits / ComponentTypeTraits — HLSL scalar ↔ dx::linalg::ComponentEnum mapping
 // ----------------------------------------------------------------------------
 template <typename T> struct TypeTraits {};
 
-#define __MINIDXNN_DEFINE_TYPE_MAPPING(type, value, numElements) \
+#define __MINIDXNN_DEFINE_TYPE_MAPPING__(type, value, numElements) \
   template <> struct TypeTraits< type > \
   { \
-    static const dx::linalg::DataType COMPONENT_TYPE = ( value ); \
+    static const dx::linalg::ComponentEnum COMPONENT_TYPE = ( value ); \
     static const uint NUM_ELEMENTS = ( numElements ); \
   }
 
-__MINIDXNN_DEFINE_TYPE_MAPPING(int16_t, dx::linalg::DATA_TYPE_SINT16, 1);
-__MINIDXNN_DEFINE_TYPE_MAPPING(uint16_t, dx::linalg::DATA_TYPE_UINT16, 1);
-__MINIDXNN_DEFINE_TYPE_MAPPING(int32_t, dx::linalg::DATA_TYPE_SINT32, 1);
-__MINIDXNN_DEFINE_TYPE_MAPPING(uint32_t, dx::linalg::DATA_TYPE_UINT32, 1);
-__MINIDXNN_DEFINE_TYPE_MAPPING(float16_t, dx::linalg::DATA_TYPE_FLOAT16, 1);
-__MINIDXNN_DEFINE_TYPE_MAPPING(float32_t, dx::linalg::DATA_TYPE_FLOAT32, 1);
-__MINIDXNN_DEFINE_TYPE_MAPPING(int8_t4_packed, dx::linalg::DATA_TYPE_SINT8_T4_PACKED, 4);
-__MINIDXNN_DEFINE_TYPE_MAPPING(uint8_t4_packed, dx::linalg::DATA_TYPE_UINT8_T4_PACKED, 4);
+__MINIDXNN_DEFINE_TYPE_MAPPING__(int16_t, dx::linalg::ComponentType::I16, 1);
+__MINIDXNN_DEFINE_TYPE_MAPPING__(uint16_t, dx::linalg::ComponentType::U16, 1);
+__MINIDXNN_DEFINE_TYPE_MAPPING__(int32_t, dx::linalg::ComponentType::I32, 1);
+__MINIDXNN_DEFINE_TYPE_MAPPING__(uint32_t, dx::linalg::ComponentType::U32, 1);
+__MINIDXNN_DEFINE_TYPE_MAPPING__(float16_t, dx::linalg::ComponentType::F16, 1);
+__MINIDXNN_DEFINE_TYPE_MAPPING__(float32_t, dx::linalg::ComponentType::F32, 1);
+__MINIDXNN_DEFINE_TYPE_MAPPING__(int8_t4_packed, dx::linalg::ComponentType::I8, 4);
+__MINIDXNN_DEFINE_TYPE_MAPPING__(uint8_t4_packed, dx::linalg::ComponentType::U8, 4);
 
-template <dx::linalg::DataType T> struct ComponentTypeTraits {};
+#undef __MINIDXNN_DEFINE_TYPE_MAPPING__
 
-#define __MINIDXNN_DEFINE_COMPONENT_MAPPING(component, type, numElements) \
+template <dx::linalg::ComponentEnum T> struct ComponentTypeTraits {};
+
+#define __MINIDXNN_DEFINE_COMPONENT_MAPPING__(component, type, numElements) \
   template <> struct ComponentTypeTraits< component > \
   { \
     using Type = type; \
@@ -483,14 +485,57 @@ template <dx::linalg::DataType T> struct ComponentTypeTraits {};
     static const uint NUM_ELEMENTS = ( numElements ); \
   }
 
-__MINIDXNN_DEFINE_COMPONENT_MAPPING(dx::linalg::DATA_TYPE_SINT16, int16_t, 1);
-__MINIDXNN_DEFINE_COMPONENT_MAPPING(dx::linalg::DATA_TYPE_UINT16, uint16_t, 1);
-__MINIDXNN_DEFINE_COMPONENT_MAPPING(dx::linalg::DATA_TYPE_SINT32, int32_t, 1);
-__MINIDXNN_DEFINE_COMPONENT_MAPPING(dx::linalg::DATA_TYPE_UINT32, uint32_t, 1);
-__MINIDXNN_DEFINE_COMPONENT_MAPPING(dx::linalg::DATA_TYPE_FLOAT16, float16_t, 1);
-__MINIDXNN_DEFINE_COMPONENT_MAPPING(dx::linalg::DATA_TYPE_FLOAT32, float32_t, 1);
-__MINIDXNN_DEFINE_COMPONENT_MAPPING(dx::linalg::DATA_TYPE_SINT8_T4_PACKED, int8_t4_packed, 4);
-__MINIDXNN_DEFINE_COMPONENT_MAPPING(dx::linalg::DATA_TYPE_UINT8_T4_PACKED, uint8_t4_packed, 4);
+__MINIDXNN_DEFINE_COMPONENT_MAPPING__(dx::linalg::ComponentType::I16, int16_t, 1);
+__MINIDXNN_DEFINE_COMPONENT_MAPPING__(dx::linalg::ComponentType::U16, uint16_t, 1);
+__MINIDXNN_DEFINE_COMPONENT_MAPPING__(dx::linalg::ComponentType::I32, int32_t, 1);
+__MINIDXNN_DEFINE_COMPONENT_MAPPING__(dx::linalg::ComponentType::U32, uint32_t, 1);
+__MINIDXNN_DEFINE_COMPONENT_MAPPING__(dx::linalg::ComponentType::F16, float16_t, 1);
+__MINIDXNN_DEFINE_COMPONENT_MAPPING__(dx::linalg::ComponentType::F32, float32_t, 1);
+__MINIDXNN_DEFINE_COMPONENT_MAPPING__(dx::linalg::ComponentType::I8, int8_t4_packed, 4);
+__MINIDXNN_DEFINE_COMPONENT_MAPPING__(dx::linalg::ComponentType::U8, uint8_t4_packed, 4);
+
+#undef __MINIDXNN_DEFINE_COMPONENT_MAPPING__
+
+// ----------------------------------------------------------------------------
+// Local buffer-reference types (replacing types removed from new dx/linalg.h)
+// ----------------------------------------------------------------------------
+
+// MatrixRefImpl: local replacement for the removed dx::linalg::MatrixRefImpl.
+// Stores a buffer reference, byte offset, and stride for a matrix in a ByteAddressBuffer.
+template <typename BufferTy, dx::linalg::ComponentEnum DT, uint M, uint K, dx::linalg::MatrixLayoutEnum ML, bool Transpose>
+struct MatrixRefImpl {
+  BufferTy Buffer;
+  uint StartOffset;
+  uint Stride;
+};
+
+template <dx::linalg::ComponentEnum DT, uint M, uint K, dx::linalg::MatrixLayoutEnum ML, bool Transpose = false>
+using MatrixRef = MatrixRefImpl<ByteAddressBuffer, DT, M, K, ML, Transpose>;
+
+template <dx::linalg::ComponentEnum DT, uint M, uint K, dx::linalg::MatrixLayoutEnum ML, bool Transpose = false>
+using RWMatrixRef = MatrixRefImpl<RWByteAddressBuffer, DT, M, K, ML, Transpose>;
+
+// VectorRefImpl: local replacement for the removed dx::linalg::VectorRefImpl.
+// Used for RW bias gradient buffers. Read-only bias uses dx::linalg::VectorRef directly.
+template <typename BufferTy, dx::linalg::ComponentEnum DT>
+struct VectorRefImpl {
+  BufferTy Buffer;
+  uint StartOffset;
+};
+
+template <dx::linalg::ComponentEnum DT>
+using RWVectorRef = VectorRefImpl<RWByteAddressBuffer, DT>;
+
+// precise qualifier: prevents the HLSL compiler from reordering or
+// optimizing floating-point operations that feed into InterlockedCompareExchange
+// and FP16 buffer I/O.
+// Without this, /O3 can break the CAS loop by hoisting or simplifying the
+// float<->uint round-trip computation.
+#ifdef __cplusplus
+#define __MINIDXNN_PRECISE__
+#else // __cplusplus
+#define __MINIDXNN_PRECISE__ precise
+#endif // __cplusplus
 
 // ----------------------------------------------------------------------------
 // VectorBufferAccessor — typed load/store for ByteAddressBuffer / RWByteAddressBuffer
@@ -517,7 +562,7 @@ struct VectorBufferAccessor
   }
 
   template <int N>
-  static void store(RWByteAddressBuffer buffer, const uint offset, MINIDXNN_IN(vector<Type, N>) value)
+  static void store(RWByteAddressBuffer buffer, const uint offset, __MINIDXNN_IN__(vector<Type, N>) value)
   {
     using VecT = vector<Type, N>;
     buffer.template Store<VecT>(offset, value);
@@ -544,7 +589,7 @@ struct VectorBufferAccessor<float16_t>
   }
 
   template <int N>
-  static void store(RWByteAddressBuffer buffer, const uint offset, MINIDXNN_IN(vector<Type, N>) value)
+  static void store(RWByteAddressBuffer buffer, const uint offset, __MINIDXNN_IN__(vector<Type, N>) value)
   {
     __storeImpl<N>(buffer, offset, value);
   }
@@ -561,8 +606,10 @@ struct VectorBufferAccessor<float16_t>
     VecT output;
     StagingVecT staging = buffer.template Load<StagingVecT>(offset);
     for (int i = 0; i < (N / 2); ++i) {
-      output[2 * i    ] = asfloat16((uint16_t)(staging[i]));
-      output[2 * i + 1] = asfloat16((uint16_t)(staging[i] >> 16));
+      const uint32_t lo = staging[i];
+      const uint32_t hi = staging[i] >> 16;
+      output[2 * i    ] = asfloat16((uint16_t)lo);
+      output[2 * i + 1] = asfloat16((uint16_t)hi);
     }
     if (isLastOdd) {
       output[N - 1] = asfloat16((uint16_t)staging[NS - 1]);
@@ -579,7 +626,9 @@ struct VectorBufferAccessor<float16_t>
 
     StagingVecT staging = (StagingVecT)0;
     for (int i = 0; i < (N / 2); ++i) {
-      staging[i] = (uint32_t)asuint16(value[2 * i]) | ((uint32_t)asuint16(value[2 * i + 1]) << 16);
+      const uint32_t lo = (uint32_t)asuint16(value[2 * i]);
+      const uint32_t hi = (uint32_t)asuint16(value[2 * i + 1]) << 16;
+      staging[i] = lo | hi;
     }
     if (isLastOdd) {
       staging[NS - 1] = (uint32_t)asuint16(value[N - 1]);
@@ -604,7 +653,7 @@ struct AtomicManipF16
     return f16;
   }
 
-  static void set(MINIDXNN_INOUT(uint32_t) bits, const float16_t value, const bool isHigh16Bits)
+  static void set(__MINIDXNN_INOUT__(uint32_t) bits, const float16_t value, const bool isHigh16Bits)
   {
     const uint32_t f16Mask = 0xffff;
     const uint32_t f16Bits = (uint32_t)f32tof16((float)value);
@@ -614,8 +663,8 @@ struct AtomicManipF16
 
   static uint32_t add(const uint32_t lhs, const float16_t rhs, const bool isHigh16Bits)
   {
-    const float16_t lhsF16 = get(lhs, isHigh16Bits);
-    const float16_t resultF16 = lhsF16 + rhs;
+    __MINIDXNN_PRECISE__ const float16_t lhsF16 = get(lhs, isHigh16Bits);
+    __MINIDXNN_PRECISE__ const float16_t resultF16 = lhsF16 + rhs;
     uint32_t result = lhs;
     set(result, resultF16, isHigh16Bits);
     return result;
@@ -629,19 +678,17 @@ Type atomicFetchAdd(RWByteAddressBuffer object, const uint offset, const Type va
 template <>
 float32_t atomicFetchAdd(RWByteAddressBuffer object, const uint offset, const float32_t value)
 {
-  uint32_t oldValue = 0;
+  uint32_t oldValue = object.Load<uint32_t>(offset);
 #ifndef __cplusplus
-  [allow_uav_condition]
+  [loop] [allow_uav_condition]
 #endif // __cplusplus
   while (true) {
-    oldValue = object.Load<uint32_t>(offset);
-    const uint32_t newValue = asuint(asfloat(oldValue) + value);
-    uint32_t originalValue = 0;
-    object.InterlockedCompareExchange(offset, oldValue, newValue, originalValue);
-    if (oldValue == originalValue) {
+    __MINIDXNN_PRECISE__ const uint32_t newValue = asuint(asfloat(oldValue) + value);
+    const uint32_t expectedValue = oldValue;
+    object.InterlockedCompareExchange(offset, expectedValue, newValue, oldValue);
+    if (expectedValue == oldValue) {
       break;
     }
-    oldValue = originalValue;
   }
   return asfloat(oldValue);
 }
@@ -654,21 +701,50 @@ float16_t atomicFetchAdd(RWByteAddressBuffer object, const uint offset, const fl
   const uint u32Offset = sizeof(uint32_t) * (f16Index / 2);
   const bool isHigh16Bits = (f16Index & 0x1) == 0x1;
 
-  uint32_t oldValue = 0;
+  uint32_t oldValue = object.Load<uint32_t>(u32Offset);
 #ifndef __cplusplus
-  [allow_uav_condition]
+  [loop] [allow_uav_condition]
 #endif // __cplusplus
   while (true) {
-    oldValue = object.Load<uint32_t>(u32Offset);
-    const uint32_t newValue = ManipT::add(oldValue, value, isHigh16Bits);
-    uint32_t originalValue = 0;
-    object.InterlockedCompareExchange(u32Offset, oldValue, newValue, originalValue);
-    if (oldValue == originalValue) {
+    __MINIDXNN_PRECISE__ const uint32_t newValue = ManipT::add(oldValue, value, isHigh16Bits);
+    const uint32_t expectedValue = oldValue;
+    object.InterlockedCompareExchange(u32Offset, expectedValue, newValue, oldValue);
+    if (expectedValue == oldValue) {
       break;
     }
-    oldValue = originalValue;
   }
   return ManipT::get(oldValue, isHigh16Bits);
+}
+
+// ----------------------------------------------------------------------------
+// Utility — precise element-wise multiply for gradient chains
+// ----------------------------------------------------------------------------
+
+// Element-wise multiply with per-element precise qualifier.
+// DXC -O3 can miscompile vector multiplications in FP16 gradient chains;
+// decomposing into scalar precise operations prevents harmful reordering.
+template <typename ElemT, int N>
+vector<ElemT, N> preciseElementWiseMul(__MINIDXNN_IN__(vector<ElemT, N>) a,
+                                       __MINIDXNN_IN__(vector<ElemT, N>) b)
+{
+  vector<ElemT, N> result;
+  for (uint i = 0; i < (uint)N; ++i) {
+    __MINIDXNN_PRECISE__ const ElemT v = a[i] * b[i];
+    result[i] = v;
+  }
+  return result;
+}
+
+template <typename ElemT, int N>
+void preciseElementWiseMul(
+    __MINIDXNN_OUT__(vector<ElemT, N>) result,
+    __MINIDXNN_IN__(vector<ElemT, N>) a,
+    __MINIDXNN_IN__(vector<ElemT, N>) b)
+{
+  for (int i = 0; i < N; ++i) {
+    __MINIDXNN_PRECISE__ const ElemT v = a[i] * b[i];
+    result[i] = v;
+  }
 }
 
 // ----------------------------------------------------------------------------
@@ -684,16 +760,16 @@ uint align(const uint sizeInBytes, const uint alignmentInBytes)
 
 // MatrixDataLayout: Computes byte offsets and provides row/column access
 // for matrices stored in row-major, column-major, or optimal layouts.
-template <dx::linalg::DataType ELEM_TYPE, dx::linalg::MatrixLayout LAYOUT>
+template <dx::linalg::ComponentEnum ELEM_TYPE, dx::linalg::MatrixLayoutEnum LAYOUT>
 struct MatrixDataLayout
 {
   using Type = typename ComponentTypeTraits<ELEM_TYPE>::Type;
 
 
-  static const bool IS_ROW_MAJOR = LAYOUT == dx::linalg::MATRIX_LAYOUT_ROW_MAJOR;
-  static const bool IS_COLUMN_MAJOR = LAYOUT == dx::linalg::MATRIX_LAYOUT_COLUMN_MAJOR;
-  static const bool IS_MUL_OPTIMAL = LAYOUT == dx::linalg::MATRIX_LAYOUT_MUL_OPTIMAL;
-  static const bool IS_OUTER_PRODUCT_OPTIMAL = LAYOUT == dx::linalg::MATRIX_LAYOUT_OUTER_PRODUCT_OPTIMAL;
+  static const bool IS_ROW_MAJOR = LAYOUT == dx::linalg::MatrixLayout::RowMajor;
+  static const bool IS_COLUMN_MAJOR = LAYOUT == dx::linalg::MatrixLayout::ColMajor;
+  static const bool IS_MUL_OPTIMAL = LAYOUT == dx::linalg::MatrixLayout::MulOptimal;
+  static const bool IS_OUTER_PRODUCT_OPTIMAL = LAYOUT == dx::linalg::MatrixLayout::OuterProductOptimal;
 
 
   template <uint ROW_SIZE, uint COLUMN_SIZE, bool IS_TRANSPOSED>
@@ -753,27 +829,29 @@ struct LinearAlgebra
             typename InputElemT,
             int INPUT_ELEM_COUNT,
             typename MatrixBufferT,
-            dx::linalg::DataType INPUT_ELEM_TYPE,
-            dx::linalg::DataType MATRIX_ELEM_TYPE,
+            dx::linalg::ComponentEnum MATRIX_ELEM_TYPE,
             uint ROW_SIZE,
             uint COLUMN_SIZE,
-            dx::linalg::MatrixLayout MATRIX_LAYOUT,
+            dx::linalg::MatrixLayoutEnum MATRIX_LAYOUT,
             bool IS_MATRIX_TRANSPOSED>
   static
   vector<OutputElemT, ROW_SIZE>
-  mulSW(MINIDXNN_IN(dx::linalg::MatrixRefImpl<MatrixBufferT, MATRIX_ELEM_TYPE, ROW_SIZE, COLUMN_SIZE, MATRIX_LAYOUT, IS_MATRIX_TRANSPOSED>) matrix,
-        MINIDXNN_IN(dx::linalg::InterpretedVector<InputElemT, INPUT_ELEM_COUNT, INPUT_ELEM_TYPE>) input)
+  mulSW(__MINIDXNN_IN__(MatrixRefImpl<MatrixBufferT, MATRIX_ELEM_TYPE, ROW_SIZE, COLUMN_SIZE, MATRIX_LAYOUT, IS_MATRIX_TRANSPOSED>) matrix,
+        __MINIDXNN_IN__(vector<InputElemT, INPUT_ELEM_COUNT>) input)
   {
+    // mulSW only supports RowMajor or ColumnMajor layouts
     using OutputVecT = vector<OutputElemT, ROW_SIZE>;
     using LayoutT = MatrixDataLayout<MATRIX_ELEM_TYPE, MATRIX_LAYOUT>;
     using MatrixElemT = typename LayoutT::Type;
     using RowVecT = vector<MatrixElemT, COLUMN_SIZE>;
-    using RowAccumVecT = vector<OutputElemT, COLUMN_SIZE>;
 
     OutputVecT output = (OutputVecT)0;
     for (uint row = 0; row < ROW_SIZE; ++row) {
       const RowVecT rowVec = LayoutT::template getRowVector<ROW_SIZE, COLUMN_SIZE, IS_MATRIX_TRANSPOSED>(matrix.Buffer, row, matrix.StartOffset, matrix.Stride);
-      output[row] = dot((RowAccumVecT)rowVec, (RowAccumVecT)input.Data);
+      __MINIDXNN_PRECISE__ OutputElemT acc = (OutputElemT)0;
+      for (int col = 0; col < (int)COLUMN_SIZE; ++col)
+        acc += (OutputElemT)rowVec[col] * (OutputElemT)input[col];
+      output[row] = acc;
     }
     return output;
   }
@@ -782,34 +860,34 @@ struct LinearAlgebra
             typename InputElemT,
             int INPUT_ELEM_COUNT,
             typename MatrixBufferT,
-            dx::linalg::DataType INPUT_ELEM_TYPE,
-            dx::linalg::DataType MATRIX_ELEM_TYPE,
+            dx::linalg::ComponentEnum MATRIX_ELEM_TYPE,
             uint ROW_SIZE,
             uint COLUMN_SIZE,
-            dx::linalg::MatrixLayout MATRIX_LAYOUT,
+            dx::linalg::MatrixLayoutEnum MATRIX_LAYOUT,
             bool IS_MATRIX_TRANSPOSED>
   static
   vector<OutputElemT, ROW_SIZE>
-  mulHW(MINIDXNN_IN(dx::linalg::MatrixRefImpl<MatrixBufferT, MATRIX_ELEM_TYPE, ROW_SIZE, COLUMN_SIZE, MATRIX_LAYOUT, IS_MATRIX_TRANSPOSED>) matrix,
-        MINIDXNN_IN(dx::linalg::InterpretedVector<InputElemT, INPUT_ELEM_COUNT, INPUT_ELEM_TYPE>) input)
+  mulHW(__MINIDXNN_IN__(MatrixRefImpl<MatrixBufferT, MATRIX_ELEM_TYPE, ROW_SIZE, COLUMN_SIZE, MATRIX_LAYOUT, IS_MATRIX_TRANSPOSED>) matrix,
+        __MINIDXNN_IN__(vector<InputElemT, INPUT_ELEM_COUNT>) input)
   {
-    return dx::linalg::Mul<OutputElemT>(matrix, input);
+    using DxMatrixT = dx::linalg::Matrix<MATRIX_ELEM_TYPE, ROW_SIZE, COLUMN_SIZE, dx::linalg::MatrixUse::A, dx::linalg::MatrixScope::Thread>;
+    DxMatrixT dxMatrix = DxMatrixT::template Load<MATRIX_LAYOUT>(matrix.Buffer, matrix.StartOffset, matrix.Stride);
+    return dx::linalg::Multiply<OutputElemT>(dxMatrix, input);
   }
 
   template <typename OutputElemT,
             typename InputElemT,
             int INPUT_ELEM_COUNT,
             typename MatrixBufferT,
-            dx::linalg::DataType INPUT_ELEM_TYPE,
-            dx::linalg::DataType MATRIX_ELEM_TYPE,
+            dx::linalg::ComponentEnum MATRIX_ELEM_TYPE,
             uint ROW_SIZE,
             uint COLUMN_SIZE,
-            dx::linalg::MatrixLayout MATRIX_LAYOUT,
+            dx::linalg::MatrixLayoutEnum MATRIX_LAYOUT,
             bool IS_MATRIX_TRANSPOSED>
   static
   vector<OutputElemT, ROW_SIZE>
-  mul(MINIDXNN_IN(dx::linalg::MatrixRefImpl<MatrixBufferT, MATRIX_ELEM_TYPE, ROW_SIZE, COLUMN_SIZE, MATRIX_LAYOUT, IS_MATRIX_TRANSPOSED>) matrix,
-      MINIDXNN_IN(dx::linalg::InterpretedVector<InputElemT, INPUT_ELEM_COUNT, INPUT_ELEM_TYPE>) input)
+  mul(__MINIDXNN_IN__(MatrixRefImpl<MatrixBufferT, MATRIX_ELEM_TYPE, ROW_SIZE, COLUMN_SIZE, MATRIX_LAYOUT, IS_MATRIX_TRANSPOSED>) matrix,
+      __MINIDXNN_IN__(vector<InputElemT, INPUT_ELEM_COUNT>) input)
   {
     using OutputVecT = vector<OutputElemT, ROW_SIZE>;
 
@@ -826,20 +904,20 @@ struct LinearAlgebra
             typename InputElemT,
             int INPUT_ELEM_COUNT,
             typename MatrixBufferT,
-            dx::linalg::DataType INPUT_ELEM_TYPE,
-            dx::linalg::DataType MATRIX_ELEM_TYPE,
+            dx::linalg::ComponentEnum MATRIX_ELEM_TYPE,
             uint ROW_SIZE,
             uint COLUMN_SIZE,
-            dx::linalg::MatrixLayout MATRIX_LAYOUT,
+            dx::linalg::MatrixLayoutEnum MATRIX_LAYOUT,
             bool IS_MATRIX_TRANSPOSED,
             typename BiasBufferT,
-            dx::linalg::DataType BIAS_ELEM_TYPE>
+            dx::linalg::ComponentEnum BIAS_ELEM_TYPE>
   static
   vector<OutputElemT, ROW_SIZE>
-  mulAddSW(MINIDXNN_IN(dx::linalg::MatrixRefImpl<MatrixBufferT, MATRIX_ELEM_TYPE, ROW_SIZE, COLUMN_SIZE, MATRIX_LAYOUT, IS_MATRIX_TRANSPOSED>) matrix,
-           MINIDXNN_IN(dx::linalg::InterpretedVector<InputElemT, INPUT_ELEM_COUNT, INPUT_ELEM_TYPE>) input,
-           MINIDXNN_IN(dx::linalg::VectorRefImpl<BiasBufferT, BIAS_ELEM_TYPE>) bias)
+  mulAddSW(__MINIDXNN_IN__(MatrixRefImpl<MatrixBufferT, MATRIX_ELEM_TYPE, ROW_SIZE, COLUMN_SIZE, MATRIX_LAYOUT, IS_MATRIX_TRANSPOSED>) matrix,
+           __MINIDXNN_IN__(vector<InputElemT, INPUT_ELEM_COUNT>) input,
+           __MINIDXNN_IN__(VectorRefImpl<BiasBufferT, BIAS_ELEM_TYPE>) bias)
   {
+    // mulAddSW only supports RowMajor or ColumnMajor layouts
     using OutputVecT = vector<OutputElemT, ROW_SIZE>;
     using BiasElemT = typename ComponentTypeTraits<BIAS_ELEM_TYPE>::Type;
     using BiasVecT = vector<BiasElemT, ROW_SIZE>;
@@ -854,40 +932,41 @@ struct LinearAlgebra
             typename InputElemT,
             int INPUT_ELEM_COUNT,
             typename MatrixBufferT,
-            dx::linalg::DataType INPUT_ELEM_TYPE,
-            dx::linalg::DataType MATRIX_ELEM_TYPE,
+            dx::linalg::ComponentEnum MATRIX_ELEM_TYPE,
             uint ROW_SIZE,
             uint COLUMN_SIZE,
-            dx::linalg::MatrixLayout MATRIX_LAYOUT,
+            dx::linalg::MatrixLayoutEnum MATRIX_LAYOUT,
             bool IS_MATRIX_TRANSPOSED,
             typename BiasBufferT,
-            dx::linalg::DataType BIAS_ELEM_TYPE>
+            dx::linalg::ComponentEnum BIAS_ELEM_TYPE>
   static
   vector<OutputElemT, ROW_SIZE>
-  mulAddHW(MINIDXNN_IN(dx::linalg::MatrixRefImpl<MatrixBufferT, MATRIX_ELEM_TYPE, ROW_SIZE, COLUMN_SIZE, MATRIX_LAYOUT, IS_MATRIX_TRANSPOSED>) matrix,
-           MINIDXNN_IN(dx::linalg::InterpretedVector<InputElemT, INPUT_ELEM_COUNT, INPUT_ELEM_TYPE>) input,
-           MINIDXNN_IN(dx::linalg::VectorRefImpl<BiasBufferT, BIAS_ELEM_TYPE>) bias)
+  mulAddHW(__MINIDXNN_IN__(MatrixRefImpl<MatrixBufferT, MATRIX_ELEM_TYPE, ROW_SIZE, COLUMN_SIZE, MATRIX_LAYOUT, IS_MATRIX_TRANSPOSED>) matrix,
+           __MINIDXNN_IN__(vector<InputElemT, INPUT_ELEM_COUNT>) input,
+           __MINIDXNN_IN__(VectorRefImpl<BiasBufferT, BIAS_ELEM_TYPE>) bias)
   {
-    return dx::linalg::MulAdd<OutputElemT>(matrix, input, bias);
+    using DxMatrixT = dx::linalg::Matrix<MATRIX_ELEM_TYPE, ROW_SIZE, COLUMN_SIZE, dx::linalg::MatrixUse::A, dx::linalg::MatrixScope::Thread>;
+    DxMatrixT dxMatrix = DxMatrixT::template Load<MATRIX_LAYOUT>(matrix.Buffer, matrix.StartOffset, matrix.Stride);
+    dx::linalg::VectorRef<BIAS_ELEM_TYPE, ROW_SIZE> dxBias = {bias.Buffer, bias.StartOffset};
+    return dx::linalg::MultiplyAdd<OutputElemT>(dxMatrix, input, dxBias);
   }
 
   template <typename OutputElemT,
             typename InputElemT,
             int INPUT_ELEM_COUNT,
             typename MatrixBufferT,
-            dx::linalg::DataType INPUT_ELEM_TYPE,
-            dx::linalg::DataType MATRIX_ELEM_TYPE,
+            dx::linalg::ComponentEnum MATRIX_ELEM_TYPE,
             uint ROW_SIZE,
             uint COLUMN_SIZE,
-            dx::linalg::MatrixLayout MATRIX_LAYOUT,
+            dx::linalg::MatrixLayoutEnum MATRIX_LAYOUT,
             bool IS_MATRIX_TRANSPOSED,
             typename BiasBufferT,
-            dx::linalg::DataType BIAS_ELEM_TYPE>
+            dx::linalg::ComponentEnum BIAS_ELEM_TYPE>
   static
   vector<OutputElemT, ROW_SIZE>
-  mulAdd(MINIDXNN_IN(dx::linalg::MatrixRefImpl<MatrixBufferT, MATRIX_ELEM_TYPE, ROW_SIZE, COLUMN_SIZE, MATRIX_LAYOUT, IS_MATRIX_TRANSPOSED>) matrix,
-         MINIDXNN_IN(dx::linalg::InterpretedVector<InputElemT, INPUT_ELEM_COUNT, INPUT_ELEM_TYPE>) input,
-         MINIDXNN_IN(dx::linalg::VectorRefImpl<BiasBufferT, BIAS_ELEM_TYPE>) bias)
+  mulAdd(__MINIDXNN_IN__(MatrixRefImpl<MatrixBufferT, MATRIX_ELEM_TYPE, ROW_SIZE, COLUMN_SIZE, MATRIX_LAYOUT, IS_MATRIX_TRANSPOSED>) matrix,
+         __MINIDXNN_IN__(vector<InputElemT, INPUT_ELEM_COUNT>) input,
+         __MINIDXNN_IN__(VectorRefImpl<BiasBufferT, BIAS_ELEM_TYPE>) bias)
   {
     using OutputVecT = vector<OutputElemT, ROW_SIZE>;
 
@@ -906,35 +985,25 @@ struct LinearAlgebra
   template <typename InputElemT,
             int ROW_SIZE,
             int COLUMN_SIZE,
-            dx::linalg::DataType MATRIX_ELEM_TYPE,
-            dx::linalg::MatrixLayout MATRIX_LAYOUT>
+            dx::linalg::ComponentEnum MATRIX_ELEM_TYPE,
+            dx::linalg::MatrixLayoutEnum MATRIX_LAYOUT>
   static
-  void outerProductAccSW(MINIDXNN_IN(vector<InputElemT, ROW_SIZE>) vecLhs,
-                         MINIDXNN_IN(vector<InputElemT, COLUMN_SIZE>) vecRhs,
-                         dx::linalg::RWMatrixRef<MATRIX_ELEM_TYPE, (uint)ROW_SIZE, (uint)COLUMN_SIZE, MATRIX_LAYOUT, false> matrix)
+  void outerProductAccSW(__MINIDXNN_IN__(vector<InputElemT, ROW_SIZE>) vecLhs,
+                         __MINIDXNN_IN__(vector<InputElemT, COLUMN_SIZE>) vecRhs,
+                         RWMatrixRef<MATRIX_ELEM_TYPE, (uint)ROW_SIZE, (uint)COLUMN_SIZE, MATRIX_LAYOUT, false> matrix)
   {
     using LayoutT = MatrixDataLayout<MATRIX_ELEM_TYPE, MATRIX_LAYOUT>;
     using MatrixElemT = typename LayoutT::Type;
     const bool isMatrixTransposed = false;
 
-    if (LayoutT::IS_COLUMN_MAJOR) { // For column-major memory access
-      for (uint row = 0; row < (uint)ROW_SIZE; ++row) {
-        const vector<InputElemT, COLUMN_SIZE> rowVec = vecLhs[row] * vecRhs;
-        for (uint column = 0; column < (uint)COLUMN_SIZE; ++column) {
-          const uint offset = LayoutT::template getElementOffset<(uint)ROW_SIZE, (uint)COLUMN_SIZE, isMatrixTransposed>(row, column, matrix.Stride);
-          const MatrixElemT value = (MatrixElemT)rowVec[column];
-          atomicFetchAdd(matrix.Buffer, matrix.StartOffset + offset, value);
-        }
-      }
-    }
-    else { // For row-major memory access
+    // Element-by-element outer product with precise scalar operations.
+    // The precise qualifier prevents DXC -O3 from reordering or fusing
+    // the FP16 multiply-cast chain, which can break gradient accumulation.
+    for (uint row = 0; row < (uint)ROW_SIZE; ++row) {
       for (uint column = 0; column < (uint)COLUMN_SIZE; ++column) {
-        const vector<InputElemT, ROW_SIZE> columnVec = vecLhs * vecRhs[column];
-        for (uint row = 0; row < (uint)ROW_SIZE; ++row) {
-          const uint offset = LayoutT::template getElementOffset<(uint)ROW_SIZE, (uint)COLUMN_SIZE, isMatrixTransposed>(row, column, matrix.Stride);
-          const MatrixElemT value = (MatrixElemT)columnVec[row];
-          atomicFetchAdd(matrix.Buffer, matrix.StartOffset + offset, value);
-        }
+        const uint offset = LayoutT::template getElementOffset<(uint)ROW_SIZE, (uint)COLUMN_SIZE, isMatrixTransposed>(row, column, matrix.Stride);
+        __MINIDXNN_PRECISE__ const MatrixElemT value = (MatrixElemT)(vecLhs[row] * vecRhs[column]);
+        atomicFetchAdd(matrix.Buffer, matrix.StartOffset + offset, value);
       }
     }
   }
@@ -942,32 +1011,64 @@ struct LinearAlgebra
   template <typename InputElemT,
             int ROW_SIZE,
             int COLUMN_SIZE,
-            dx::linalg::DataType MATRIX_ELEM_TYPE,
-            dx::linalg::MatrixLayout MATRIX_LAYOUT>
+            dx::linalg::ComponentEnum MATRIX_ELEM_TYPE,
+            dx::linalg::MatrixLayoutEnum MATRIX_LAYOUT>
   static
-  void outerProductAcc(MINIDXNN_IN(vector<InputElemT, ROW_SIZE>) vecLhs,
-                       MINIDXNN_IN(vector<InputElemT, COLUMN_SIZE>) vecRhs,
-                       dx::linalg::RWMatrixRef<MATRIX_ELEM_TYPE, (uint)ROW_SIZE, (uint)COLUMN_SIZE, MATRIX_LAYOUT, false> matrix)
+  void outerProductAccHW(__MINIDXNN_IN__(vector<InputElemT, ROW_SIZE>) vecLhs,
+                         __MINIDXNN_IN__(vector<InputElemT, COLUMN_SIZE>) vecRhs,
+                         RWMatrixRef<MATRIX_ELEM_TYPE, (uint)ROW_SIZE, (uint)COLUMN_SIZE, MATRIX_LAYOUT, false> matrix)
   {
+    using AccumMatrixT = dx::linalg::Matrix<MATRIX_ELEM_TYPE, (uint)ROW_SIZE, (uint)COLUMN_SIZE, dx::linalg::MatrixUse::Accumulator, dx::linalg::MatrixScope::Thread>;
+    AccumMatrixT accumMatrix = dx::linalg::OuterProduct<MATRIX_ELEM_TYPE>(vecLhs, vecRhs);
+    accumMatrix.InterlockedAccumulate(matrix.Buffer, matrix.StartOffset);
+  }
+
+  template <typename InputElemT,
+            int ROW_SIZE,
+            int COLUMN_SIZE,
+            dx::linalg::ComponentEnum MATRIX_ELEM_TYPE,
+            dx::linalg::MatrixLayoutEnum MATRIX_LAYOUT>
+  static
+  void outerProductAcc(__MINIDXNN_IN__(vector<InputElemT, ROW_SIZE>) vecLhs,
+                       __MINIDXNN_IN__(vector<InputElemT, COLUMN_SIZE>) vecRhs,
+                       RWMatrixRef<MATRIX_ELEM_TYPE, (uint)ROW_SIZE, (uint)COLUMN_SIZE, MATRIX_LAYOUT, false> matrix)
+  {
+#if defined(MINIDXNN_USE_SOFTWARE_LINALG_IMPL) && (MINIDXNN_USE_SOFTWARE_LINALG_IMPL != 0)
     outerProductAccSW(vecLhs, vecRhs, matrix);
+#else // MINIDXNN_USE_SOFTWARE_LINALG_IMPL
+    outerProductAccHW(vecLhs, vecRhs, matrix);
+#endif // MINIDXNN_USE_SOFTWARE_LINALG_IMPL
   }
 
   template <typename ElemT, int SIZE>
   static
-  void vectorAccSW(MINIDXNN_IN(vector<ElemT, SIZE>) input,
-                   dx::linalg::RWVectorRef<TypeTraits<ElemT>::COMPONENT_TYPE> vec)
+  void vectorAccSW(__MINIDXNN_IN__(vector<ElemT, SIZE>) input,
+                   RWVectorRef<TypeTraits<ElemT>::COMPONENT_TYPE> vec)
   {
     for (uint i = 0; i < SIZE; ++i) {
-      atomicFetchAdd(vec.Buffer, vec.StartOffset + i * sizeof(ElemT), input[i]);
+      __MINIDXNN_PRECISE__ const ElemT value = input[i];
+      atomicFetchAdd(vec.Buffer, vec.StartOffset + i * sizeof(ElemT), value);
     }
   }
 
   template <typename ElemT, int SIZE>
   static
-  void vectorAcc(MINIDXNN_IN(vector<ElemT, SIZE>) input,
-                 dx::linalg::RWVectorRef<TypeTraits<ElemT>::COMPONENT_TYPE> vec)
+  void vectorAccHW(__MINIDXNN_IN__(vector<ElemT, SIZE>) input,
+                 RWVectorRef<TypeTraits<ElemT>::COMPONENT_TYPE> vec)
   {
     vectorAccSW(input, vec);
+  }
+
+  template <typename ElemT, int SIZE>
+  static
+  void vectorAcc(__MINIDXNN_IN__(vector<ElemT, SIZE>) input,
+                 RWVectorRef<TypeTraits<ElemT>::COMPONENT_TYPE> vec)
+  {
+#if defined(MINIDXNN_USE_SOFTWARE_LINALG_IMPL) && (MINIDXNN_USE_SOFTWARE_LINALG_IMPL != 0)
+    vectorAccSW(input, vec);
+#else // MINIDXNN_USE_SOFTWARE_LINALG_IMPL
+    vectorAccHW(input, vec);
+#endif // MINIDXNN_USE_SOFTWARE_LINALG_IMPL
   }
 };
 
@@ -994,37 +1095,37 @@ struct LinearLayer<true>
             int HIDDEN_LAYER_DIM,
             // Weight
             typename WeightBufferT,
-            dx::linalg::DataType WEIGHT_ELEM_TYPE,
-            dx::linalg::MatrixLayout WEIGHT_MATRIX_LAYOUT,
+            dx::linalg::ComponentEnum WEIGHT_ELEM_TYPE,
+            dx::linalg::MatrixLayoutEnum WEIGHT_MATRIX_LAYOUT,
             // Weight gradient cache
             CacheMethod WEIGHT_GRADIENT_CACHE_METHOD,
             typename WeightGradientCacheBufferT,
-            dx::linalg::DataType WEIGHT_GRADIENT_CACHE_ELEM_TYPE,
+            dx::linalg::ComponentEnum WEIGHT_GRADIENT_CACHE_ELEM_TYPE,
             // Bias
             CacheMethod BIAS_CACHE_METHOD,
             typename BiasBufferT,
-            dx::linalg::DataType BIAS_ELEM_TYPE,
+            dx::linalg::ComponentEnum BIAS_ELEM_TYPE,
             // Bias gradient cache
             CacheMethod BIAS_GRADIENT_CACHE_METHOD,
             typename BiasGradientCacheBufferT,
-            dx::linalg::DataType BIAS_GRADIENT_CACHE_ELEM_TYPE,
+            dx::linalg::ComponentEnum BIAS_GRADIENT_CACHE_ELEM_TYPE,
             // Pre-activation
-            dx::linalg::DataType ACCUMULATOR_ELEM_TYPE,
+            dx::linalg::ComponentEnum ACCUMULATOR_ELEM_TYPE,
             CacheMethod LOGITS_CACHE_METHOD,
             typename LogitsCacheBufferT,
-            dx::linalg::DataType LOGITS_CACHE_ELEM_TYPE,
+            dx::linalg::ComponentEnum LOGITS_CACHE_ELEM_TYPE,
             // Activation functions
             typename ActivationHiddenT,
             typename ActivationLastT,
-            dx::linalg::DataType ACTIVATION_ELEM_TYPE,
+            dx::linalg::ComponentEnum ACTIVATION_ELEM_TYPE,
             // Alignments
             uint WEIGHT_MATRIX_ALIGNMENT,
             uint WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT,
             uint BIAS_VECTOR_ALIGNMENT>
   static
-  void forward(MINIDXNN_OUT(vector<OutputElemT, OUTPUT_DIM>) output,
-               MINIDXNN_IN(vector<InputElemT, INPUT_DIM>) input,
-               MINIDXNN_INOUT(LayerDataRefImpl<NUM_LAYERS, HIDDEN_LAYER_DIM, CacheMethod::CACHE, WeightBufferT, WEIGHT_ELEM_TYPE, WEIGHT_MATRIX_LAYOUT, WEIGHT_GRADIENT_CACHE_METHOD, WeightGradientCacheBufferT, WEIGHT_GRADIENT_CACHE_ELEM_TYPE, BIAS_CACHE_METHOD, BiasBufferT, BIAS_ELEM_TYPE, BIAS_GRADIENT_CACHE_METHOD, BiasGradientCacheBufferT, BIAS_GRADIENT_CACHE_ELEM_TYPE, ACCUMULATOR_ELEM_TYPE, LOGITS_CACHE_METHOD, LogitsCacheBufferT, LOGITS_CACHE_ELEM_TYPE, ActivationHiddenT, ActivationLastT, ACTIVATION_ELEM_TYPE, WEIGHT_MATRIX_ALIGNMENT, WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT, BIAS_VECTOR_ALIGNMENT>) layerData,
+  void forward(__MINIDXNN_OUT__(vector<OutputElemT, OUTPUT_DIM>) output,
+               __MINIDXNN_IN__(vector<InputElemT, INPUT_DIM>) input,
+               __MINIDXNN_INOUT__(LayerDataRefImpl<NUM_LAYERS, HIDDEN_LAYER_DIM, CacheMethod::CACHE, WeightBufferT, WEIGHT_ELEM_TYPE, WEIGHT_MATRIX_LAYOUT, WEIGHT_GRADIENT_CACHE_METHOD, WeightGradientCacheBufferT, WEIGHT_GRADIENT_CACHE_ELEM_TYPE, BIAS_CACHE_METHOD, BiasBufferT, BIAS_ELEM_TYPE, BIAS_GRADIENT_CACHE_METHOD, BiasGradientCacheBufferT, BIAS_GRADIENT_CACHE_ELEM_TYPE, ACCUMULATOR_ELEM_TYPE, LOGITS_CACHE_METHOD, LogitsCacheBufferT, LOGITS_CACHE_ELEM_TYPE, ActivationHiddenT, ActivationLastT, ACTIVATION_ELEM_TYPE, WEIGHT_MATRIX_ALIGNMENT, WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT, BIAS_VECTOR_ALIGNMENT>) layerData,
                const uint layerIndex)
   {
     using InputTypeTraits = TypeTraits<InputElemT>;
@@ -1034,7 +1135,7 @@ struct LinearLayer<true>
 
     const OutputVecT result = LinearAlgebra::mulAdd<OutputElemT>(
         layerData.m_weight.template makeDxMatrixRef<OUTPUT_DIM, INPUT_DIM>(layerIndex),
-        dx::linalg::MakeInterpretedVector<InputTypeTraits::COMPONENT_TYPE>(input),
+        input,
         layerData.m_bias.makeDxVectorRef(layerIndex));
 
     // Pre-activation cache
@@ -1056,46 +1157,45 @@ struct LinearLayer<true>
             int HIDDEN_LAYER_DIM,
             // Weight
             typename WeightBufferT,
-            dx::linalg::DataType WEIGHT_ELEM_TYPE,
-            dx::linalg::MatrixLayout WEIGHT_MATRIX_LAYOUT,
+            dx::linalg::ComponentEnum WEIGHT_ELEM_TYPE,
+            dx::linalg::MatrixLayoutEnum WEIGHT_MATRIX_LAYOUT,
             // Weight gradient cache
             CacheMethod WEIGHT_GRADIENT_CACHE_METHOD,
             typename WeightGradientCacheBufferT,
-            dx::linalg::DataType WEIGHT_GRADIENT_CACHE_ELEM_TYPE,
+            dx::linalg::ComponentEnum WEIGHT_GRADIENT_CACHE_ELEM_TYPE,
             // Bias
             CacheMethod BIAS_CACHE_METHOD,
             typename BiasBufferT,
-            dx::linalg::DataType BIAS_ELEM_TYPE,
+            dx::linalg::ComponentEnum BIAS_ELEM_TYPE,
             // Bias gradient cache
             CacheMethod BIAS_GRADIENT_CACHE_METHOD,
             typename BiasGradientCacheBufferT,
-            dx::linalg::DataType BIAS_GRADIENT_CACHE_ELEM_TYPE,
+            dx::linalg::ComponentEnum BIAS_GRADIENT_CACHE_ELEM_TYPE,
             // Pre-activation
-            dx::linalg::DataType ACCUMULATOR_ELEM_TYPE,
+            dx::linalg::ComponentEnum ACCUMULATOR_ELEM_TYPE,
             CacheMethod LOGITS_CACHE_METHOD,
             typename LogitsCacheBufferT,
-            dx::linalg::DataType LOGITS_CACHE_ELEM_TYPE,
+            dx::linalg::ComponentEnum LOGITS_CACHE_ELEM_TYPE,
             // Activation functions
             typename ActivationHiddenT,
             typename ActivationLastT,
-            dx::linalg::DataType ACTIVATION_ELEM_TYPE,
+            dx::linalg::ComponentEnum ACTIVATION_ELEM_TYPE,
             // Alignments
             uint WEIGHT_MATRIX_ALIGNMENT,
             uint WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT,
             uint BIAS_VECTOR_ALIGNMENT>
   static
-  void backward(MINIDXNN_OUT(vector<UpstreamElemT, INPUT_DIM>) upstreamGrad,
-                MINIDXNN_IN(vector<DownstreamElemT, OUTPUT_DIM>) downstreamGrad,
-                MINIDXNN_IN(vector<InputElemT, INPUT_DIM>) input,
-                MINIDXNN_INOUT(LayerDataRefImpl<NUM_LAYERS, HIDDEN_LAYER_DIM, CacheMethod::CACHE, WeightBufferT, WEIGHT_ELEM_TYPE, WEIGHT_MATRIX_LAYOUT, WEIGHT_GRADIENT_CACHE_METHOD, WeightGradientCacheBufferT, WEIGHT_GRADIENT_CACHE_ELEM_TYPE, BIAS_CACHE_METHOD, BiasBufferT, BIAS_ELEM_TYPE, BIAS_GRADIENT_CACHE_METHOD, BiasGradientCacheBufferT, BIAS_GRADIENT_CACHE_ELEM_TYPE, ACCUMULATOR_ELEM_TYPE, LOGITS_CACHE_METHOD, LogitsCacheBufferT, LOGITS_CACHE_ELEM_TYPE, ActivationHiddenT, ActivationLastT, ACTIVATION_ELEM_TYPE, WEIGHT_MATRIX_ALIGNMENT, WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT, BIAS_VECTOR_ALIGNMENT>) layerData,
+  void backward(__MINIDXNN_OUT__(vector<UpstreamElemT, INPUT_DIM>) upstreamGrad,
+                __MINIDXNN_IN__(vector<DownstreamElemT, OUTPUT_DIM>) downstreamGrad,
+                __MINIDXNN_IN__(vector<InputElemT, INPUT_DIM>) input,
+                __MINIDXNN_INOUT__(LayerDataRefImpl<NUM_LAYERS, HIDDEN_LAYER_DIM, CacheMethod::CACHE, WeightBufferT, WEIGHT_ELEM_TYPE, WEIGHT_MATRIX_LAYOUT, WEIGHT_GRADIENT_CACHE_METHOD, WeightGradientCacheBufferT, WEIGHT_GRADIENT_CACHE_ELEM_TYPE, BIAS_CACHE_METHOD, BiasBufferT, BIAS_ELEM_TYPE, BIAS_GRADIENT_CACHE_METHOD, BiasGradientCacheBufferT, BIAS_GRADIENT_CACHE_ELEM_TYPE, ACCUMULATOR_ELEM_TYPE, LOGITS_CACHE_METHOD, LogitsCacheBufferT, LOGITS_CACHE_ELEM_TYPE, ActivationHiddenT, ActivationLastT, ACTIVATION_ELEM_TYPE, WEIGHT_MATRIX_ALIGNMENT, WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT, BIAS_VECTOR_ALIGNMENT>) layerData,
                 const uint layerIndex)
   {
     LinearAlgebra::outerProductAcc(downstreamGrad, input, layerData.m_weightGradCache.template makeDxMatrixRef<OUTPUT_DIM, INPUT_DIM>(layerIndex));
     LinearAlgebra::vectorAcc(downstreamGrad, layerData.m_biasGradCache.makeDxVectorRef(layerIndex));
-    const dx::linalg::DataType DOWNSTREAM_ELEM_T = TypeTraits<DownstreamElemT>::COMPONENT_TYPE;
     upstreamGrad = LinearAlgebra::mul<UpstreamElemT>(
         layerData.m_weight.template makeDxMatrixRef<INPUT_DIM, OUTPUT_DIM, true>(layerIndex),
-        dx::linalg::MakeInterpretedVector<DOWNSTREAM_ELEM_T>(downstreamGrad));
+        downstreamGrad);
   }
 };
 
@@ -1115,37 +1215,37 @@ struct LinearLayer<false>
             int HIDDEN_LAYER_DIM,
             // Weight
             typename WeightBufferT,
-            dx::linalg::DataType WEIGHT_ELEM_TYPE,
-            dx::linalg::MatrixLayout WEIGHT_MATRIX_LAYOUT,
+            dx::linalg::ComponentEnum WEIGHT_ELEM_TYPE,
+            dx::linalg::MatrixLayoutEnum WEIGHT_MATRIX_LAYOUT,
             // Weight gradient cache
             CacheMethod WEIGHT_GRADIENT_CACHE_METHOD,
             typename WeightGradientCacheBufferT,
-            dx::linalg::DataType WEIGHT_GRADIENT_CACHE_ELEM_TYPE,
+            dx::linalg::ComponentEnum WEIGHT_GRADIENT_CACHE_ELEM_TYPE,
             // Bias
             CacheMethod BIAS_CACHE_METHOD,
             typename BiasBufferT,
-            dx::linalg::DataType BIAS_ELEM_TYPE,
+            dx::linalg::ComponentEnum BIAS_ELEM_TYPE,
             // Bias gradient cache
             CacheMethod BIAS_GRADIENT_CACHE_METHOD,
             typename BiasGradientCacheBufferT,
-            dx::linalg::DataType BIAS_GRADIENT_CACHE_ELEM_TYPE,
+            dx::linalg::ComponentEnum BIAS_GRADIENT_CACHE_ELEM_TYPE,
             // Pre-activation
-            dx::linalg::DataType ACCUMULATOR_ELEM_TYPE,
+            dx::linalg::ComponentEnum ACCUMULATOR_ELEM_TYPE,
             CacheMethod LOGITS_CACHE_METHOD,
             typename LogitsCacheBufferT,
-            dx::linalg::DataType LOGITS_CACHE_ELEM_TYPE,
+            dx::linalg::ComponentEnum LOGITS_CACHE_ELEM_TYPE,
             // Activation functions
             typename ActivationHiddenT,
             typename ActivationLastT,
-            dx::linalg::DataType ACTIVATION_ELEM_TYPE,
+            dx::linalg::ComponentEnum ACTIVATION_ELEM_TYPE,
             // Alignments
             uint WEIGHT_MATRIX_ALIGNMENT,
             uint WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT,
             uint BIAS_VECTOR_ALIGNMENT>
   static
-  void forward(MINIDXNN_OUT(vector<OutputElemT, OUTPUT_DIM>) output,
-               MINIDXNN_IN(vector<InputElemT, INPUT_DIM>) input,
-               MINIDXNN_INOUT(LayerDataRefImpl<NUM_LAYERS, HIDDEN_LAYER_DIM, CacheMethod::CACHE, WeightBufferT, WEIGHT_ELEM_TYPE, WEIGHT_MATRIX_LAYOUT, WEIGHT_GRADIENT_CACHE_METHOD, WeightGradientCacheBufferT, WEIGHT_GRADIENT_CACHE_ELEM_TYPE, BIAS_CACHE_METHOD, BiasBufferT, BIAS_ELEM_TYPE, BIAS_GRADIENT_CACHE_METHOD, BiasGradientCacheBufferT, BIAS_GRADIENT_CACHE_ELEM_TYPE, ACCUMULATOR_ELEM_TYPE, LOGITS_CACHE_METHOD, LogitsCacheBufferT, LOGITS_CACHE_ELEM_TYPE, ActivationHiddenT, ActivationLastT, ACTIVATION_ELEM_TYPE, WEIGHT_MATRIX_ALIGNMENT, WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT, BIAS_VECTOR_ALIGNMENT>) layerData,
+  void forward(__MINIDXNN_OUT__(vector<OutputElemT, OUTPUT_DIM>) output,
+               __MINIDXNN_IN__(vector<InputElemT, INPUT_DIM>) input,
+               __MINIDXNN_INOUT__(LayerDataRefImpl<NUM_LAYERS, HIDDEN_LAYER_DIM, CacheMethod::CACHE, WeightBufferT, WEIGHT_ELEM_TYPE, WEIGHT_MATRIX_LAYOUT, WEIGHT_GRADIENT_CACHE_METHOD, WeightGradientCacheBufferT, WEIGHT_GRADIENT_CACHE_ELEM_TYPE, BIAS_CACHE_METHOD, BiasBufferT, BIAS_ELEM_TYPE, BIAS_GRADIENT_CACHE_METHOD, BiasGradientCacheBufferT, BIAS_GRADIENT_CACHE_ELEM_TYPE, ACCUMULATOR_ELEM_TYPE, LOGITS_CACHE_METHOD, LogitsCacheBufferT, LOGITS_CACHE_ELEM_TYPE, ActivationHiddenT, ActivationLastT, ACTIVATION_ELEM_TYPE, WEIGHT_MATRIX_ALIGNMENT, WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT, BIAS_VECTOR_ALIGNMENT>) layerData,
                const uint layerIndex)
   {
     using InputTypeTraits = TypeTraits<InputElemT>;
@@ -1155,7 +1255,7 @@ struct LinearLayer<false>
 
     const OutputVecT result = LinearAlgebra::mul<OutputElemT>(
         layerData.m_weight.template makeDxMatrixRef<OUTPUT_DIM, INPUT_DIM>(layerIndex),
-        dx::linalg::MakeInterpretedVector<InputTypeTraits::COMPONENT_TYPE>(input));
+        input);
 
     // Pre-activation cache
     layerData.m_logitsCache.setValue((LogitsVecT)result, layerIndex);
@@ -1176,45 +1276,44 @@ struct LinearLayer<false>
             int HIDDEN_LAYER_DIM,
             // Weight
             typename WeightBufferT,
-            dx::linalg::DataType WEIGHT_ELEM_TYPE,
-            dx::linalg::MatrixLayout WEIGHT_MATRIX_LAYOUT,
+            dx::linalg::ComponentEnum WEIGHT_ELEM_TYPE,
+            dx::linalg::MatrixLayoutEnum WEIGHT_MATRIX_LAYOUT,
             // Weight gradient cache
             CacheMethod WEIGHT_GRADIENT_CACHE_METHOD,
             typename WeightGradientCacheBufferT,
-            dx::linalg::DataType WEIGHT_GRADIENT_CACHE_ELEM_TYPE,
+            dx::linalg::ComponentEnum WEIGHT_GRADIENT_CACHE_ELEM_TYPE,
             // Bias
             CacheMethod BIAS_CACHE_METHOD,
             typename BiasBufferT,
-            dx::linalg::DataType BIAS_ELEM_TYPE,
+            dx::linalg::ComponentEnum BIAS_ELEM_TYPE,
             // Bias gradient cache
             CacheMethod BIAS_GRADIENT_CACHE_METHOD,
             typename BiasGradientCacheBufferT,
-            dx::linalg::DataType BIAS_GRADIENT_CACHE_ELEM_TYPE,
+            dx::linalg::ComponentEnum BIAS_GRADIENT_CACHE_ELEM_TYPE,
             // Pre-activation
-            dx::linalg::DataType ACCUMULATOR_ELEM_TYPE,
+            dx::linalg::ComponentEnum ACCUMULATOR_ELEM_TYPE,
             CacheMethod LOGITS_CACHE_METHOD,
             typename LogitsCacheBufferT,
-            dx::linalg::DataType LOGITS_CACHE_ELEM_TYPE,
+            dx::linalg::ComponentEnum LOGITS_CACHE_ELEM_TYPE,
             // Activation functions
             typename ActivationHiddenT,
             typename ActivationLastT,
-            dx::linalg::DataType ACTIVATION_ELEM_TYPE,
+            dx::linalg::ComponentEnum ACTIVATION_ELEM_TYPE,
             // Alignments
             uint WEIGHT_MATRIX_ALIGNMENT,
             uint WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT,
             uint BIAS_VECTOR_ALIGNMENT>
   static
-  void backward(MINIDXNN_OUT(vector<UpstreamElemT, INPUT_DIM>) upstreamGrad,
-                MINIDXNN_IN(vector<DownstreamElemT, OUTPUT_DIM>) downstreamGrad,
-                MINIDXNN_IN(vector<InputElemT, INPUT_DIM>) input,
-                MINIDXNN_INOUT(LayerDataRefImpl<NUM_LAYERS, HIDDEN_LAYER_DIM, CacheMethod::CACHE, WeightBufferT, WEIGHT_ELEM_TYPE, WEIGHT_MATRIX_LAYOUT, WEIGHT_GRADIENT_CACHE_METHOD, WeightGradientCacheBufferT, WEIGHT_GRADIENT_CACHE_ELEM_TYPE, BIAS_CACHE_METHOD, BiasBufferT, BIAS_ELEM_TYPE, BIAS_GRADIENT_CACHE_METHOD, BiasGradientCacheBufferT, BIAS_GRADIENT_CACHE_ELEM_TYPE, ACCUMULATOR_ELEM_TYPE, LOGITS_CACHE_METHOD, LogitsCacheBufferT, LOGITS_CACHE_ELEM_TYPE, ActivationHiddenT, ActivationLastT, ACTIVATION_ELEM_TYPE, WEIGHT_MATRIX_ALIGNMENT, WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT, BIAS_VECTOR_ALIGNMENT>) layerData,
+  void backward(__MINIDXNN_OUT__(vector<UpstreamElemT, INPUT_DIM>) upstreamGrad,
+                __MINIDXNN_IN__(vector<DownstreamElemT, OUTPUT_DIM>) downstreamGrad,
+                __MINIDXNN_IN__(vector<InputElemT, INPUT_DIM>) input,
+                __MINIDXNN_INOUT__(LayerDataRefImpl<NUM_LAYERS, HIDDEN_LAYER_DIM, CacheMethod::CACHE, WeightBufferT, WEIGHT_ELEM_TYPE, WEIGHT_MATRIX_LAYOUT, WEIGHT_GRADIENT_CACHE_METHOD, WeightGradientCacheBufferT, WEIGHT_GRADIENT_CACHE_ELEM_TYPE, BIAS_CACHE_METHOD, BiasBufferT, BIAS_ELEM_TYPE, BIAS_GRADIENT_CACHE_METHOD, BiasGradientCacheBufferT, BIAS_GRADIENT_CACHE_ELEM_TYPE, ACCUMULATOR_ELEM_TYPE, LOGITS_CACHE_METHOD, LogitsCacheBufferT, LOGITS_CACHE_ELEM_TYPE, ActivationHiddenT, ActivationLastT, ACTIVATION_ELEM_TYPE, WEIGHT_MATRIX_ALIGNMENT, WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT, BIAS_VECTOR_ALIGNMENT>) layerData,
                 const uint layerIndex)
   {
     LinearAlgebra::outerProductAcc(downstreamGrad, input, layerData.m_weightGradCache.template makeDxMatrixRef<OUTPUT_DIM, INPUT_DIM>(layerIndex));
-    const dx::linalg::DataType DOWNSTREAM_ELEM_T = TypeTraits<DownstreamElemT>::COMPONENT_TYPE;
     upstreamGrad = LinearAlgebra::mul<UpstreamElemT>(
         layerData.m_weight.template makeDxMatrixRef<INPUT_DIM, OUTPUT_DIM, true>(layerIndex),
-        dx::linalg::MakeInterpretedVector<DOWNSTREAM_ELEM_T>(downstreamGrad));
+        downstreamGrad);
   }
 };
 
@@ -1235,37 +1334,37 @@ struct Mlp
             int HIDDEN_LAYER_DIM,
             // Weight
             typename WeightBufferT,
-            dx::linalg::DataType WEIGHT_ELEM_TYPE,
-            dx::linalg::MatrixLayout WEIGHT_MATRIX_LAYOUT,
+            dx::linalg::ComponentEnum WEIGHT_ELEM_TYPE,
+            dx::linalg::MatrixLayoutEnum WEIGHT_MATRIX_LAYOUT,
             // Weight gradient cache
             CacheMethod WEIGHT_GRADIENT_CACHE_METHOD,
             typename WeightGradientCacheBufferT,
-            dx::linalg::DataType WEIGHT_GRADIENT_CACHE_ELEM_TYPE,
+            dx::linalg::ComponentEnum WEIGHT_GRADIENT_CACHE_ELEM_TYPE,
             // Bias
             CacheMethod BIAS_CACHE_METHOD,
             typename BiasBufferT,
-            dx::linalg::DataType BIAS_ELEM_TYPE,
+            dx::linalg::ComponentEnum BIAS_ELEM_TYPE,
             // Bias gradient cache
             CacheMethod BIAS_GRADIENT_CACHE_METHOD,
             typename BiasGradientCacheBufferT,
-            dx::linalg::DataType BIAS_GRADIENT_CACHE_ELEM_TYPE,
+            dx::linalg::ComponentEnum BIAS_GRADIENT_CACHE_ELEM_TYPE,
             // Pre-activation
-            dx::linalg::DataType ACCUMULATOR_ELEM_TYPE,
+            dx::linalg::ComponentEnum ACCUMULATOR_ELEM_TYPE,
             CacheMethod LOGITS_CACHE_METHOD,
             typename LogitsCacheBufferT,
-            dx::linalg::DataType LOGITS_CACHE_ELEM_TYPE,
+            dx::linalg::ComponentEnum LOGITS_CACHE_ELEM_TYPE,
             // Activation functions
             typename ActivationHiddenT,
             typename ActivationLastT,
-            dx::linalg::DataType ACTIVATION_ELEM_TYPE,
+            dx::linalg::ComponentEnum ACTIVATION_ELEM_TYPE,
             // Alignments
             uint WEIGHT_MATRIX_ALIGNMENT,
             uint WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT,
             uint BIAS_VECTOR_ALIGNMENT>
   static
-  void forward(MINIDXNN_OUT(vector<OutputElemT, OUTPUT_DIM>) output,
-               MINIDXNN_IN(vector<InputElemT, INPUT_DIM>) input,
-               MINIDXNN_INOUT(LayerDataRefImpl<NUM_LAYERS, HIDDEN_LAYER_DIM, CacheMethod::CACHE, WeightBufferT, WEIGHT_ELEM_TYPE, WEIGHT_MATRIX_LAYOUT, WEIGHT_GRADIENT_CACHE_METHOD, WeightGradientCacheBufferT, WEIGHT_GRADIENT_CACHE_ELEM_TYPE, BIAS_CACHE_METHOD, BiasBufferT, BIAS_ELEM_TYPE, BIAS_GRADIENT_CACHE_METHOD, BiasGradientCacheBufferT, BIAS_GRADIENT_CACHE_ELEM_TYPE, ACCUMULATOR_ELEM_TYPE, LOGITS_CACHE_METHOD, LogitsCacheBufferT, LOGITS_CACHE_ELEM_TYPE, ActivationHiddenT, ActivationLastT, ACTIVATION_ELEM_TYPE, WEIGHT_MATRIX_ALIGNMENT, WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT, BIAS_VECTOR_ALIGNMENT>) layerData)
+  void forward(__MINIDXNN_OUT__(vector<OutputElemT, OUTPUT_DIM>) output,
+               __MINIDXNN_IN__(vector<InputElemT, INPUT_DIM>) input,
+               __MINIDXNN_INOUT__(LayerDataRefImpl<NUM_LAYERS, HIDDEN_LAYER_DIM, CacheMethod::CACHE, WeightBufferT, WEIGHT_ELEM_TYPE, WEIGHT_MATRIX_LAYOUT, WEIGHT_GRADIENT_CACHE_METHOD, WeightGradientCacheBufferT, WEIGHT_GRADIENT_CACHE_ELEM_TYPE, BIAS_CACHE_METHOD, BiasBufferT, BIAS_ELEM_TYPE, BIAS_GRADIENT_CACHE_METHOD, BiasGradientCacheBufferT, BIAS_GRADIENT_CACHE_ELEM_TYPE, ACCUMULATOR_ELEM_TYPE, LOGITS_CACHE_METHOD, LogitsCacheBufferT, LOGITS_CACHE_ELEM_TYPE, ActivationHiddenT, ActivationLastT, ACTIVATION_ELEM_TYPE, WEIGHT_MATRIX_ALIGNMENT, WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT, BIAS_VECTOR_ALIGNMENT>) layerData)
   {
     using AccumElemT = typename ComponentTypeTraits<ACCUMULATOR_ELEM_TYPE>::Type;
     using AccumVecT = vector<AccumElemT, HIDDEN_LAYER_DIM>;
@@ -1312,38 +1411,38 @@ struct Mlp
             int HIDDEN_LAYER_DIM,
             // Weight
             typename WeightBufferT,
-            dx::linalg::DataType WEIGHT_ELEM_TYPE,
-            dx::linalg::MatrixLayout WEIGHT_MATRIX_LAYOUT,
+            dx::linalg::ComponentEnum WEIGHT_ELEM_TYPE,
+            dx::linalg::MatrixLayoutEnum WEIGHT_MATRIX_LAYOUT,
             // Weight gradient cache
             CacheMethod WEIGHT_GRADIENT_CACHE_METHOD,
             typename WeightGradientCacheBufferT,
-            dx::linalg::DataType WEIGHT_GRADIENT_CACHE_ELEM_TYPE,
+            dx::linalg::ComponentEnum WEIGHT_GRADIENT_CACHE_ELEM_TYPE,
             // Bias
             CacheMethod BIAS_CACHE_METHOD,
             typename BiasBufferT,
-            dx::linalg::DataType BIAS_ELEM_TYPE,
+            dx::linalg::ComponentEnum BIAS_ELEM_TYPE,
             // Bias gradient cache
             CacheMethod BIAS_GRADIENT_CACHE_METHOD,
             typename BiasGradientCacheBufferT,
-            dx::linalg::DataType BIAS_GRADIENT_CACHE_ELEM_TYPE,
+            dx::linalg::ComponentEnum BIAS_GRADIENT_CACHE_ELEM_TYPE,
             // Pre-activation
-            dx::linalg::DataType ACCUMULATOR_ELEM_TYPE,
+            dx::linalg::ComponentEnum ACCUMULATOR_ELEM_TYPE,
             CacheMethod LOGITS_CACHE_METHOD,
             typename LogitsCacheBufferT,
-            dx::linalg::DataType LOGITS_CACHE_ELEM_TYPE,
+            dx::linalg::ComponentEnum LOGITS_CACHE_ELEM_TYPE,
             // Activation functions
             typename ActivationHiddenT,
             typename ActivationLastT,
-            dx::linalg::DataType ACTIVATION_ELEM_TYPE,
+            dx::linalg::ComponentEnum ACTIVATION_ELEM_TYPE,
             // Alignments
             uint WEIGHT_MATRIX_ALIGNMENT,
             uint WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT,
             uint BIAS_VECTOR_ALIGNMENT>
   static
   vector<OutputElemT, INPUT_DIM>
-  backward(MINIDXNN_IN(vector<OutputElemT, OUTPUT_DIM>) downstreamGrad,
-           MINIDXNN_IN(vector<InputElemT, INPUT_DIM>) input,
-           MINIDXNN_INOUT(LayerDataRefImpl<NUM_LAYERS, HIDDEN_LAYER_DIM, CacheMethod::CACHE, WeightBufferT, WEIGHT_ELEM_TYPE, WEIGHT_MATRIX_LAYOUT, WEIGHT_GRADIENT_CACHE_METHOD, WeightGradientCacheBufferT, WEIGHT_GRADIENT_CACHE_ELEM_TYPE, BIAS_CACHE_METHOD, BiasBufferT, BIAS_ELEM_TYPE, BIAS_GRADIENT_CACHE_METHOD, BiasGradientCacheBufferT, BIAS_GRADIENT_CACHE_ELEM_TYPE, ACCUMULATOR_ELEM_TYPE, LOGITS_CACHE_METHOD, LogitsCacheBufferT, LOGITS_CACHE_ELEM_TYPE, ActivationHiddenT, ActivationLastT, ACTIVATION_ELEM_TYPE, WEIGHT_MATRIX_ALIGNMENT, WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT, BIAS_VECTOR_ALIGNMENT>) layerData)
+  backward(__MINIDXNN_IN__(vector<OutputElemT, OUTPUT_DIM>) downstreamGrad,
+           __MINIDXNN_IN__(vector<InputElemT, INPUT_DIM>) input,
+           __MINIDXNN_INOUT__(LayerDataRefImpl<NUM_LAYERS, HIDDEN_LAYER_DIM, CacheMethod::CACHE, WeightBufferT, WEIGHT_ELEM_TYPE, WEIGHT_MATRIX_LAYOUT, WEIGHT_GRADIENT_CACHE_METHOD, WeightGradientCacheBufferT, WEIGHT_GRADIENT_CACHE_ELEM_TYPE, BIAS_CACHE_METHOD, BiasBufferT, BIAS_ELEM_TYPE, BIAS_GRADIENT_CACHE_METHOD, BiasGradientCacheBufferT, BIAS_GRADIENT_CACHE_ELEM_TYPE, ACCUMULATOR_ELEM_TYPE, LOGITS_CACHE_METHOD, LogitsCacheBufferT, LOGITS_CACHE_ELEM_TYPE, ActivationHiddenT, ActivationLastT, ACTIVATION_ELEM_TYPE, WEIGHT_MATRIX_ALIGNMENT, WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT, BIAS_VECTOR_ALIGNMENT>) layerData)
   {
     using AccumElemT = typename ComponentTypeTraits<ACCUMULATOR_ELEM_TYPE>::Type;
     using AccumVecT = vector<AccumElemT, HIDDEN_LAYER_DIM>;
@@ -1357,12 +1456,12 @@ struct Mlp
     // Last layer
     {
       using ActLastVecT = vector<ActElemT, OUTPUT_DIM>;
-      const uint depth = layerData.NUM_BACKBONE_LAYERS; 
+      const uint depth = layerData.NUM_BACKBONE_LAYERS;
       // Calculate downstream gradient of the layer
       const ActLastVecT logits = (ActLastVecT)layerData.m_logitsCache.template getValue<OUTPUT_DIM>(depth);
       ActLastVecT activationError;
       layerData.m_activationLast.backward(activationError, (ActLastVecT)logits);
-      const ActLastVecT downstreamLayerGrad = activationError * (ActLastVecT)downstreamGrad;
+      const ActLastVecT downstreamLayerGrad = preciseElementWiseMul(activationError, (ActLastVecT)downstreamGrad);
       // Reproduce the input to the layer from the cache
       prevLogits = (ActVecT)layerData.m_logitsCache.template getValue<HIDDEN_LAYER_DIM>(depth - 1);
       ActVecT layerInput;
@@ -1376,7 +1475,7 @@ struct Mlp
       const ActVecT logits = prevLogits;
       ActVecT activationError;
       layerData.m_activationHidden.backward(activationError, logits);
-      const ActVecT downstreamLayerGrad = activationError * (ActVecT)upstreamLayerGrad;
+      const ActVecT downstreamLayerGrad = preciseElementWiseMul(activationError, (ActVecT)upstreamLayerGrad);
       // Reproduce the input to the layer from the cache
       prevLogits = (ActVecT)layerData.m_logitsCache.template getValue<HIDDEN_LAYER_DIM>(depth - 1);
       ActVecT layerInput;
@@ -1387,12 +1486,12 @@ struct Mlp
     // First layer
     vector<AccumElemT, INPUT_DIM> upstreamLayerGradIn;
     {
-      const uint depth = 0; 
+      const uint depth = 0;
       // Calculate downstream gradient of the layer
       const ActVecT logits = prevLogits;
       ActVecT activationError;
       layerData.m_activationHidden.backward(activationError, logits);
-      const ActVecT downstreamLayerGrad = activationError * (ActVecT)upstreamLayerGrad;
+      const ActVecT downstreamLayerGrad = preciseElementWiseMul(activationError, (ActVecT)upstreamLayerGrad);
       // Linear layer backward and calculate upstream gradient of the layer
       LinearLayerT::backward(upstreamLayerGradIn, downstreamLayerGrad, input, layerData, depth);
     }
@@ -1418,37 +1517,37 @@ struct Mlp<1>
             int HIDDEN_LAYER_DIM,
             // Weight
             typename WeightBufferT,
-            dx::linalg::DataType WEIGHT_ELEM_TYPE,
-            dx::linalg::MatrixLayout WEIGHT_MATRIX_LAYOUT,
+            dx::linalg::ComponentEnum WEIGHT_ELEM_TYPE,
+            dx::linalg::MatrixLayoutEnum WEIGHT_MATRIX_LAYOUT,
             // Weight gradient cache
             CacheMethod WEIGHT_GRADIENT_CACHE_METHOD,
             typename WeightGradientCacheBufferT,
-            dx::linalg::DataType WEIGHT_GRADIENT_CACHE_ELEM_TYPE,
+            dx::linalg::ComponentEnum WEIGHT_GRADIENT_CACHE_ELEM_TYPE,
             // Bias
             CacheMethod BIAS_CACHE_METHOD,
             typename BiasBufferT,
-            dx::linalg::DataType BIAS_ELEM_TYPE,
+            dx::linalg::ComponentEnum BIAS_ELEM_TYPE,
             // Bias gradient cache
             CacheMethod BIAS_GRADIENT_CACHE_METHOD,
             typename BiasGradientCacheBufferT,
-            dx::linalg::DataType BIAS_GRADIENT_CACHE_ELEM_TYPE,
+            dx::linalg::ComponentEnum BIAS_GRADIENT_CACHE_ELEM_TYPE,
             // Pre-activation
-            dx::linalg::DataType ACCUMULATOR_ELEM_TYPE,
+            dx::linalg::ComponentEnum ACCUMULATOR_ELEM_TYPE,
             CacheMethod LOGITS_CACHE_METHOD,
             typename LogitsCacheBufferT,
-            dx::linalg::DataType LOGITS_CACHE_ELEM_TYPE,
+            dx::linalg::ComponentEnum LOGITS_CACHE_ELEM_TYPE,
             // Activation functions
             typename ActivationHiddenT,
             typename ActivationLastT,
-            dx::linalg::DataType ACTIVATION_ELEM_TYPE,
+            dx::linalg::ComponentEnum ACTIVATION_ELEM_TYPE,
             // Alignments
             uint WEIGHT_MATRIX_ALIGNMENT,
             uint WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT,
             uint BIAS_VECTOR_ALIGNMENT>
   static
-  void forward(MINIDXNN_OUT(vector<OutputElemT, OUTPUT_DIM>) output,
-               MINIDXNN_IN(vector<InputElemT, INPUT_DIM>) input,
-               MINIDXNN_INOUT(LayerDataRefImpl<NUM_LAYERS, HIDDEN_LAYER_DIM, CacheMethod::CACHE, WeightBufferT, WEIGHT_ELEM_TYPE, WEIGHT_MATRIX_LAYOUT, WEIGHT_GRADIENT_CACHE_METHOD, WeightGradientCacheBufferT, WEIGHT_GRADIENT_CACHE_ELEM_TYPE, BIAS_CACHE_METHOD, BiasBufferT, BIAS_ELEM_TYPE, BIAS_GRADIENT_CACHE_METHOD, BiasGradientCacheBufferT, BIAS_GRADIENT_CACHE_ELEM_TYPE, ACCUMULATOR_ELEM_TYPE, LOGITS_CACHE_METHOD, LogitsCacheBufferT, LOGITS_CACHE_ELEM_TYPE, ActivationHiddenT, ActivationLastT, ACTIVATION_ELEM_TYPE, WEIGHT_MATRIX_ALIGNMENT, WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT, BIAS_VECTOR_ALIGNMENT>) layerData)
+  void forward(__MINIDXNN_OUT__(vector<OutputElemT, OUTPUT_DIM>) output,
+               __MINIDXNN_IN__(vector<InputElemT, INPUT_DIM>) input,
+               __MINIDXNN_INOUT__(LayerDataRefImpl<NUM_LAYERS, HIDDEN_LAYER_DIM, CacheMethod::CACHE, WeightBufferT, WEIGHT_ELEM_TYPE, WEIGHT_MATRIX_LAYOUT, WEIGHT_GRADIENT_CACHE_METHOD, WeightGradientCacheBufferT, WEIGHT_GRADIENT_CACHE_ELEM_TYPE, BIAS_CACHE_METHOD, BiasBufferT, BIAS_ELEM_TYPE, BIAS_GRADIENT_CACHE_METHOD, BiasGradientCacheBufferT, BIAS_GRADIENT_CACHE_ELEM_TYPE, ACCUMULATOR_ELEM_TYPE, LOGITS_CACHE_METHOD, LogitsCacheBufferT, LOGITS_CACHE_ELEM_TYPE, ActivationHiddenT, ActivationLastT, ACTIVATION_ELEM_TYPE, WEIGHT_MATRIX_ALIGNMENT, WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT, BIAS_VECTOR_ALIGNMENT>) layerData)
   {
     using AccumElemT = typename ComponentTypeTraits<ACCUMULATOR_ELEM_TYPE>::Type;
     using AccumVecT = vector<AccumElemT, OUTPUT_DIM>;
@@ -1476,38 +1575,38 @@ struct Mlp<1>
             int HIDDEN_LAYER_DIM,
             // Weight
             typename WeightBufferT,
-            dx::linalg::DataType WEIGHT_ELEM_TYPE,
-            dx::linalg::MatrixLayout WEIGHT_MATRIX_LAYOUT,
+            dx::linalg::ComponentEnum WEIGHT_ELEM_TYPE,
+            dx::linalg::MatrixLayoutEnum WEIGHT_MATRIX_LAYOUT,
             // Weight gradient cache
             CacheMethod WEIGHT_GRADIENT_CACHE_METHOD,
             typename WeightGradientCacheBufferT,
-            dx::linalg::DataType WEIGHT_GRADIENT_CACHE_ELEM_TYPE,
+            dx::linalg::ComponentEnum WEIGHT_GRADIENT_CACHE_ELEM_TYPE,
             // Bias
             CacheMethod BIAS_CACHE_METHOD,
             typename BiasBufferT,
-            dx::linalg::DataType BIAS_ELEM_TYPE,
+            dx::linalg::ComponentEnum BIAS_ELEM_TYPE,
             // Bias gradient cache
             CacheMethod BIAS_GRADIENT_CACHE_METHOD,
             typename BiasGradientCacheBufferT,
-            dx::linalg::DataType BIAS_GRADIENT_CACHE_ELEM_TYPE,
+            dx::linalg::ComponentEnum BIAS_GRADIENT_CACHE_ELEM_TYPE,
             // Pre-activation
-            dx::linalg::DataType ACCUMULATOR_ELEM_TYPE,
+            dx::linalg::ComponentEnum ACCUMULATOR_ELEM_TYPE,
             CacheMethod LOGITS_CACHE_METHOD,
             typename LogitsCacheBufferT,
-            dx::linalg::DataType LOGITS_CACHE_ELEM_TYPE,
+            dx::linalg::ComponentEnum LOGITS_CACHE_ELEM_TYPE,
             // Activation functions
             typename ActivationHiddenT,
             typename ActivationLastT,
-            dx::linalg::DataType ACTIVATION_ELEM_TYPE,
+            dx::linalg::ComponentEnum ACTIVATION_ELEM_TYPE,
             // Alignments
             uint WEIGHT_MATRIX_ALIGNMENT,
             uint WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT,
             uint BIAS_VECTOR_ALIGNMENT>
   static
   vector<OutputElemT, INPUT_DIM>
-  backward(MINIDXNN_IN(vector<OutputElemT, OUTPUT_DIM>) downstreamGrad,
-           MINIDXNN_IN(vector<InputElemT, INPUT_DIM>) input,
-           MINIDXNN_INOUT(LayerDataRefImpl<NUM_LAYERS, HIDDEN_LAYER_DIM, CacheMethod::CACHE, WeightBufferT, WEIGHT_ELEM_TYPE, WEIGHT_MATRIX_LAYOUT, WEIGHT_GRADIENT_CACHE_METHOD, WeightGradientCacheBufferT, WEIGHT_GRADIENT_CACHE_ELEM_TYPE, BIAS_CACHE_METHOD, BiasBufferT, BIAS_ELEM_TYPE, BIAS_GRADIENT_CACHE_METHOD, BiasGradientCacheBufferT, BIAS_GRADIENT_CACHE_ELEM_TYPE, ACCUMULATOR_ELEM_TYPE, LOGITS_CACHE_METHOD, LogitsCacheBufferT, LOGITS_CACHE_ELEM_TYPE, ActivationHiddenT, ActivationLastT, ACTIVATION_ELEM_TYPE, WEIGHT_MATRIX_ALIGNMENT, WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT, BIAS_VECTOR_ALIGNMENT>) layerData)
+  backward(__MINIDXNN_IN__(vector<OutputElemT, OUTPUT_DIM>) downstreamGrad,
+           __MINIDXNN_IN__(vector<InputElemT, INPUT_DIM>) input,
+           __MINIDXNN_INOUT__(LayerDataRefImpl<NUM_LAYERS, HIDDEN_LAYER_DIM, CacheMethod::CACHE, WeightBufferT, WEIGHT_ELEM_TYPE, WEIGHT_MATRIX_LAYOUT, WEIGHT_GRADIENT_CACHE_METHOD, WeightGradientCacheBufferT, WEIGHT_GRADIENT_CACHE_ELEM_TYPE, BIAS_CACHE_METHOD, BiasBufferT, BIAS_ELEM_TYPE, BIAS_GRADIENT_CACHE_METHOD, BiasGradientCacheBufferT, BIAS_GRADIENT_CACHE_ELEM_TYPE, ACCUMULATOR_ELEM_TYPE, LOGITS_CACHE_METHOD, LogitsCacheBufferT, LOGITS_CACHE_ELEM_TYPE, ActivationHiddenT, ActivationLastT, ACTIVATION_ELEM_TYPE, WEIGHT_MATRIX_ALIGNMENT, WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT, BIAS_VECTOR_ALIGNMENT>) layerData)
   {
     using AccumElemT = typename ComponentTypeTraits<ACCUMULATOR_ELEM_TYPE>::Type;
     using AccumVecT = vector<AccumElemT, INPUT_DIM>;
@@ -1519,12 +1618,12 @@ struct Mlp<1>
     // Last layer
     {
       using ActLastVecT = vector<ActElemT, OUTPUT_DIM>;
-      const uint depth = 0; 
+      const uint depth = 0;
       // Calculate downstream gradient of the layer
       const ActLastVecT logits = (ActLastVecT)layerData.m_logitsCache.template getValue<OUTPUT_DIM>(depth);
       ActLastVecT activationError;
       layerData.m_activationLast.backward(activationError, (ActLastVecT)logits);
-      const ActLastVecT downstreamLayerGrad = activationError * (ActLastVecT)downstreamGrad;
+      const ActLastVecT downstreamLayerGrad = preciseElementWiseMul(activationError, (ActLastVecT)downstreamGrad);
       // Linear layer backward and calculate upstream gradient of the layer
       LinearLayerT::backward(upstreamLayerGrad, downstreamLayerGrad, input, layerData, depth);
     }
@@ -1556,16 +1655,16 @@ struct Mlp<0>
 struct IdentityActivation
 {
   template <typename OutputElemT, typename InputElemT, int N>
-  void forward(MINIDXNN_OUT(vector<OutputElemT, N>) output,
-               MINIDXNN_IN(vector<InputElemT, N>) input)
+  void forward(__MINIDXNN_OUT__(vector<OutputElemT, N>) output,
+               __MINIDXNN_IN__(vector<InputElemT, N>) input)
   {
     using OutputVecT = vector<OutputElemT, N>;
     output = (OutputVecT)input;
   }
 
   template <typename OutputElemT, typename InputElemT, int N>
-  void backward(MINIDXNN_OUT(vector<OutputElemT, N>) gradient,
-                MINIDXNN_IN(vector<InputElemT, N>) /* input */)
+  void backward(__MINIDXNN_OUT__(vector<OutputElemT, N>) gradient,
+                __MINIDXNN_IN__(vector<InputElemT, N>) /* input */)
   {
     using OutputVecT = vector<OutputElemT, N>;
     gradient = (OutputVecT)1;
@@ -1575,8 +1674,8 @@ struct IdentityActivation
 struct SigmoidActivation
 {
   template <typename OutputElemT, typename InputElemT, int N>
-  void forward(MINIDXNN_OUT(vector<OutputElemT, N>) output,
-               MINIDXNN_IN(vector<InputElemT, N>) input)
+  void forward(__MINIDXNN_OUT__(vector<OutputElemT, N>) output,
+               __MINIDXNN_IN__(vector<InputElemT, N>) input)
   {
     using OutputVecT = vector<OutputElemT, N>;
 
@@ -1588,23 +1687,26 @@ struct SigmoidActivation
   }
 
   template <typename OutputElemT, typename InputElemT, int N>
-  void backward(MINIDXNN_OUT(vector<OutputElemT, N>) gradient,
-                MINIDXNN_IN(vector<InputElemT, N>) input)
+  void backward(__MINIDXNN_OUT__(vector<OutputElemT, N>) gradient,
+                __MINIDXNN_IN__(vector<InputElemT, N>) input)
   {
-    using OutputVecT = vector<OutputElemT, N>;
-
-    const OutputVecT e = exp(-abs((OutputVecT)input));
-    const OutputElemT one = (OutputElemT)1;
-    const OutputVecT oneOverEPlusOne = one / (e + one);
-    gradient = (one - oneOverEPlusOne) * oneOverEPlusOne;
+    // Element-by-element with precise scalars to prevent DXC -O3 from
+    // replacing division with rcp or fusing the FP16 multiply chain.
+    for (int i = 0; i < N; ++i) {
+      __MINIDXNN_PRECISE__ const OutputElemT ei = exp(-abs((OutputElemT)input[i]));
+      const OutputElemT one = (OutputElemT)1;
+      __MINIDXNN_PRECISE__ const OutputElemT s = one / (ei + one);
+      __MINIDXNN_PRECISE__ const OutputElemT g = (one - s) * s;
+      gradient[i] = g;
+    }
   }
 };
 
 struct ReluActivation
 {
   template <typename OutputElemT, typename InputElemT, int N>
-  void forward(MINIDXNN_OUT(vector<OutputElemT, N>) output,
-               MINIDXNN_IN(vector<InputElemT, N>) input)
+  void forward(__MINIDXNN_OUT__(vector<OutputElemT, N>) output,
+               __MINIDXNN_IN__(vector<InputElemT, N>) input)
   {
     using InputVecT = vector<InputElemT, N>;
     using OutputVecT = vector<OutputElemT, N>;
@@ -1615,8 +1717,8 @@ struct ReluActivation
   }
 
   template <typename OutputElemT, typename InputElemT, int N>
-  void backward(MINIDXNN_OUT(vector<OutputElemT, N>) gradient,
-                MINIDXNN_IN(vector<InputElemT, N>) input)
+  void backward(__MINIDXNN_OUT__(vector<OutputElemT, N>) gradient,
+                __MINIDXNN_IN__(vector<InputElemT, N>) input)
   {
     using OutputVecT = vector<OutputElemT, N>;
     const InputElemT zero = (InputElemT)0;
@@ -1628,8 +1730,8 @@ struct ReluActivation
 struct LeakyReluActivation
 {
   template <typename OutputElemT, typename InputElemT, int N>
-  void forward(MINIDXNN_OUT(vector<OutputElemT, N>) output,
-               MINIDXNN_IN(vector<InputElemT, N>) input)
+  void forward(__MINIDXNN_OUT__(vector<OutputElemT, N>) output,
+               __MINIDXNN_IN__(vector<InputElemT, N>) input)
   {
     using InputVecT = vector<InputElemT, N>;
     using OutputVecT = vector<OutputElemT, N>;
@@ -1640,8 +1742,8 @@ struct LeakyReluActivation
   }
 
   template <typename OutputElemT, typename InputElemT, int N>
-  void backward(MINIDXNN_OUT(vector<OutputElemT, N>) gradient,
-                MINIDXNN_IN(vector<InputElemT, N>) input)
+  void backward(__MINIDXNN_OUT__(vector<OutputElemT, N>) gradient,
+                __MINIDXNN_IN__(vector<InputElemT, N>) input)
   {
     using OutputVecT = vector<OutputElemT, N>;
 
@@ -1660,28 +1762,42 @@ struct LeakyReluActivation
 // NO_CACHE: no-op stubs used when a particular buffer kind is not needed
 
 // TransposeResolver: For RowMajor/ColumnMajor layouts,
-// since transpose is not supported in cooperative vector, eliminates IS_TRANSPOSED
+// since transpose is not supported in LinAlg Matrix, eliminates IS_TRANSPOSED
 // by swapping the layout instead (transposing row-major ≡ column-major and vice versa).
 // For other layouts (MulOptimal, OuterProductOptimal), LAYOUT and IS_TRANSPOSED
 // are passed through unchanged.
-template <dx::linalg::MatrixLayout LAYOUT, bool IS_TRANSPOSED>
+template <dx::linalg::MatrixLayoutEnum LAYOUT, bool IS_TRANSPOSED>
 struct TransposeResolver
 {
-  static const dx::linalg::MatrixLayout EFFECTIVE_LAYOUT = LAYOUT;
+  static const dx::linalg::MatrixLayoutEnum EFFECTIVE_LAYOUT = LAYOUT;
   static const bool EFFECTIVE_TRANSPOSED = IS_TRANSPOSED;
 };
 
 template <>
-struct TransposeResolver<dx::linalg::MATRIX_LAYOUT_ROW_MAJOR, true>
+struct TransposeResolver<dx::linalg::MatrixLayout::RowMajor, true>
 {
-  static const dx::linalg::MatrixLayout EFFECTIVE_LAYOUT = dx::linalg::MATRIX_LAYOUT_COLUMN_MAJOR;
+  static const dx::linalg::MatrixLayoutEnum EFFECTIVE_LAYOUT = dx::linalg::MatrixLayout::ColMajor;
   static const bool EFFECTIVE_TRANSPOSED = false;
 };
 
 template <>
-struct TransposeResolver<dx::linalg::MATRIX_LAYOUT_COLUMN_MAJOR, true>
+struct TransposeResolver<dx::linalg::MatrixLayout::ColMajor, true>
 {
-  static const dx::linalg::MatrixLayout EFFECTIVE_LAYOUT = dx::linalg::MATRIX_LAYOUT_ROW_MAJOR;
+  static const dx::linalg::MatrixLayoutEnum EFFECTIVE_LAYOUT = dx::linalg::MatrixLayout::RowMajor;
+  static const bool EFFECTIVE_TRANSPOSED = false;
+};
+
+template <>
+struct TransposeResolver<dx::linalg::MatrixLayout::MulOptimal, true>
+{
+  static const dx::linalg::MatrixLayoutEnum EFFECTIVE_LAYOUT = dx::linalg::MatrixLayout::MulOptimalTranspose;
+  static const bool EFFECTIVE_TRANSPOSED = false;
+};
+
+template <>
+struct TransposeResolver<dx::linalg::MatrixLayout::OuterProductOptimal, true>
+{
+  static const dx::linalg::MatrixLayoutEnum EFFECTIVE_LAYOUT = dx::linalg::MatrixLayout::OuterProductOptimalTranspose;
   static const bool EFFECTIVE_TRANSPOSED = false;
 };
 
@@ -1689,8 +1805,8 @@ template <>
 struct MatrixData<CacheMethod::NO_CACHE>
 {
   template <typename BufferT,
-            dx::linalg::DataType ELEM_TYPE,
-            dx::linalg::MatrixLayout LAYOUT,
+            dx::linalg::ComponentEnum ELEM_TYPE,
+            dx::linalg::MatrixLayoutEnum LAYOUT,
             uint NUM_LAYERS,
             uint ALIGNMENT,
             uint VECTOR_STRIDE_ALIGNMENT>
@@ -1699,7 +1815,7 @@ struct MatrixData<CacheMethod::NO_CACHE>
     using LayoutT = impl::MatrixDataLayout<ELEM_TYPE, LAYOUT>;
     using ElemType = typename LayoutT::Type;
     template <uint ROW_SIZE, uint COLUMN_SIZE, bool IS_TRANSPOSED>
-    using DxMatrixRef = dx::linalg::MatrixRefImpl<BufferT, ELEM_TYPE, ROW_SIZE, COLUMN_SIZE,
+    using DxMatrixRef = impl::MatrixRefImpl<BufferT, ELEM_TYPE, ROW_SIZE, COLUMN_SIZE,
         TransposeResolver<LAYOUT, IS_TRANSPOSED>::EFFECTIVE_LAYOUT,
         TransposeResolver<LAYOUT, IS_TRANSPOSED>::EFFECTIVE_TRANSPOSED>;
 
@@ -1723,8 +1839,8 @@ template <>
 struct MatrixData<CacheMethod::CACHE>
 {
   template <typename BufferT,
-            dx::linalg::DataType ELEM_TYPE,
-            dx::linalg::MatrixLayout LAYOUT,
+            dx::linalg::ComponentEnum ELEM_TYPE,
+            dx::linalg::MatrixLayoutEnum LAYOUT,
             uint NUM_LAYERS,
             uint ALIGNMENT,
             uint VECTOR_STRIDE_ALIGNMENT>
@@ -1786,18 +1902,18 @@ template <>
 struct VectorData<CacheMethod::NO_CACHE>
 {
   template <typename BufferT,
-            dx::linalg::DataType ELEM_TYPE,
+            dx::linalg::ComponentEnum ELEM_TYPE,
             uint NUM_LAYERS,
             uint HIDDEN_LAYER_DIM,
             uint ALIGNMENT>
   struct Ref
   {
     using ElemType = typename impl::ComponentTypeTraits<ELEM_TYPE>::Type;
-    using DxVectorRef = dx::linalg::VectorRefImpl<BufferT, ELEM_TYPE>;
+    using DxVectorRef = impl::VectorRefImpl<BufferT, ELEM_TYPE>;
 
 
     template <int DIM>
-    void setValue(MINIDXNN_IN(vector<ElemType, DIM>) /* value */, const uint /* layerIndex */)
+    void setValue(__MINIDXNN_IN__(vector<ElemType, DIM>) /* value */, const uint /* layerIndex */)
     {
     }
 
@@ -1817,7 +1933,7 @@ template <>
 struct VectorData<CacheMethod::CACHE>
 {
   template <typename BufferT,
-            dx::linalg::DataType ELEM_TYPE,
+            dx::linalg::ComponentEnum ELEM_TYPE,
             uint NUM_LAYERS,
             uint HIDDEN_LAYER_DIM,
             uint ALIGNMENT>
@@ -1850,7 +1966,7 @@ struct VectorData<CacheMethod::CACHE>
     }
 
     template <int DIM>
-    void setValue(MINIDXNN_IN(vector<ElemType, DIM>) value, const uint layerIndex)
+    void setValue(__MINIDXNN_IN__(vector<ElemType, DIM>) value, const uint layerIndex)
     {
       const uint offset = getOffset(layerIndex);
       VectorBufferAccessorT::template store<DIM>(m_buffer, offset, value);
@@ -1889,36 +2005,36 @@ template <// Output
           int HIDDEN_LAYER_DIM,
           // Weight
           typename WeightBufferT,
-          dx::linalg::DataType WEIGHT_ELEM_TYPE,
-          dx::linalg::MatrixLayout WEIGHT_MATRIX_LAYOUT,
+          dx::linalg::ComponentEnum WEIGHT_ELEM_TYPE,
+          dx::linalg::MatrixLayoutEnum WEIGHT_MATRIX_LAYOUT,
           // Weight gradient cache
           CacheMethod WEIGHT_GRADIENT_CACHE_METHOD,
           typename WeightGradientCacheBufferT,
-          dx::linalg::DataType WEIGHT_GRADIENT_CACHE_ELEM_TYPE,
+          dx::linalg::ComponentEnum WEIGHT_GRADIENT_CACHE_ELEM_TYPE,
           // Bias
           CacheMethod BIAS_CACHE_METHOD,
           typename BiasBufferT,
-          dx::linalg::DataType BIAS_ELEM_TYPE,
+          dx::linalg::ComponentEnum BIAS_ELEM_TYPE,
           // Bias gradient cache
           CacheMethod BIAS_GRADIENT_CACHE_METHOD,
           typename BiasGradientCacheBufferT,
-          dx::linalg::DataType BIAS_GRADIENT_CACHE_ELEM_TYPE,
+          dx::linalg::ComponentEnum BIAS_GRADIENT_CACHE_ELEM_TYPE,
           // Pre-activation
-          dx::linalg::DataType ACCUMULATOR_ELEM_TYPE,
+          dx::linalg::ComponentEnum ACCUMULATOR_ELEM_TYPE,
           CacheMethod LOGITS_CACHE_METHOD,
           typename LogitsCacheBufferT,
-          dx::linalg::DataType LOGITS_CACHE_ELEM_TYPE,
+          dx::linalg::ComponentEnum LOGITS_CACHE_ELEM_TYPE,
           // Activation functions
           typename ActivationHiddenT,
           typename ActivationLastT,
-          dx::linalg::DataType ACTIVATION_ELEM_TYPE,
+          dx::linalg::ComponentEnum ACTIVATION_ELEM_TYPE,
           // Alignments
           uint WEIGHT_MATRIX_ALIGNMENT,
           uint WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT,
           uint BIAS_VECTOR_ALIGNMENT>
-void forward(MINIDXNN_OUT(vector<OutputElemT, OUTPUT_DIM>) output,
-             MINIDXNN_IN(vector<InputElemT, INPUT_DIM>) input,
-             MINIDXNN_INOUT(LayerDataRefImpl<NUM_LAYERS, HIDDEN_LAYER_DIM, CacheMethod::CACHE, WeightBufferT, WEIGHT_ELEM_TYPE, WEIGHT_MATRIX_LAYOUT, WEIGHT_GRADIENT_CACHE_METHOD, WeightGradientCacheBufferT, WEIGHT_GRADIENT_CACHE_ELEM_TYPE, BIAS_CACHE_METHOD, BiasBufferT, BIAS_ELEM_TYPE, BIAS_GRADIENT_CACHE_METHOD, BiasGradientCacheBufferT, BIAS_GRADIENT_CACHE_ELEM_TYPE, ACCUMULATOR_ELEM_TYPE, LOGITS_CACHE_METHOD, LogitsCacheBufferT, LOGITS_CACHE_ELEM_TYPE, ActivationHiddenT, ActivationLastT, ACTIVATION_ELEM_TYPE, WEIGHT_MATRIX_ALIGNMENT, WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT, BIAS_VECTOR_ALIGNMENT>) layerData)
+void forward(__MINIDXNN_OUT__(vector<OutputElemT, OUTPUT_DIM>) output,
+             __MINIDXNN_IN__(vector<InputElemT, INPUT_DIM>) input,
+             __MINIDXNN_INOUT__(LayerDataRefImpl<NUM_LAYERS, HIDDEN_LAYER_DIM, CacheMethod::CACHE, WeightBufferT, WEIGHT_ELEM_TYPE, WEIGHT_MATRIX_LAYOUT, WEIGHT_GRADIENT_CACHE_METHOD, WeightGradientCacheBufferT, WEIGHT_GRADIENT_CACHE_ELEM_TYPE, BIAS_CACHE_METHOD, BiasBufferT, BIAS_ELEM_TYPE, BIAS_GRADIENT_CACHE_METHOD, BiasGradientCacheBufferT, BIAS_GRADIENT_CACHE_ELEM_TYPE, ACCUMULATOR_ELEM_TYPE, LOGITS_CACHE_METHOD, LogitsCacheBufferT, LOGITS_CACHE_ELEM_TYPE, ActivationHiddenT, ActivationLastT, ACTIVATION_ELEM_TYPE, WEIGHT_MATRIX_ALIGNMENT, WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT, BIAS_VECTOR_ALIGNMENT>) layerData)
 {
   impl::Mlp<NUM_LAYERS>::forward(output, input, layerData);
 }
@@ -1934,41 +2050,46 @@ template <// Output
           int HIDDEN_LAYER_DIM,
           // Weight
           typename WeightBufferT,
-          dx::linalg::DataType WEIGHT_ELEM_TYPE,
-          dx::linalg::MatrixLayout WEIGHT_MATRIX_LAYOUT,
+          dx::linalg::ComponentEnum WEIGHT_ELEM_TYPE,
+          dx::linalg::MatrixLayoutEnum WEIGHT_MATRIX_LAYOUT,
           // Weight gradient cache
           CacheMethod WEIGHT_GRADIENT_CACHE_METHOD,
           typename WeightGradientCacheBufferT,
-          dx::linalg::DataType WEIGHT_GRADIENT_CACHE_ELEM_TYPE,
+          dx::linalg::ComponentEnum WEIGHT_GRADIENT_CACHE_ELEM_TYPE,
           // Bias
           CacheMethod BIAS_CACHE_METHOD,
           typename BiasBufferT,
-          dx::linalg::DataType BIAS_ELEM_TYPE,
+          dx::linalg::ComponentEnum BIAS_ELEM_TYPE,
           // Bias gradient cache
           CacheMethod BIAS_GRADIENT_CACHE_METHOD,
           typename BiasGradientCacheBufferT,
-          dx::linalg::DataType BIAS_GRADIENT_CACHE_ELEM_TYPE,
+          dx::linalg::ComponentEnum BIAS_GRADIENT_CACHE_ELEM_TYPE,
           // Pre-activation
-          dx::linalg::DataType ACCUMULATOR_ELEM_TYPE,
+          dx::linalg::ComponentEnum ACCUMULATOR_ELEM_TYPE,
           CacheMethod LOGITS_CACHE_METHOD,
           typename LogitsCacheBufferT,
-          dx::linalg::DataType LOGITS_CACHE_ELEM_TYPE,
+          dx::linalg::ComponentEnum LOGITS_CACHE_ELEM_TYPE,
           // Activation functions
           typename ActivationHiddenT,
           typename ActivationLastT,
-          dx::linalg::DataType ACTIVATION_ELEM_TYPE,
+          dx::linalg::ComponentEnum ACTIVATION_ELEM_TYPE,
           // Alignments
           uint WEIGHT_MATRIX_ALIGNMENT,
           uint WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT,
           uint BIAS_VECTOR_ALIGNMENT>
 vector<OutputElemT, INPUT_DIM>
-backward(MINIDXNN_IN(vector<OutputElemT, OUTPUT_DIM>) downstreamGrad,
-         MINIDXNN_IN(vector<InputElemT, INPUT_DIM>) input,
-         MINIDXNN_INOUT(LayerDataRefImpl<NUM_LAYERS, HIDDEN_LAYER_DIM, CacheMethod::CACHE, WeightBufferT, WEIGHT_ELEM_TYPE, WEIGHT_MATRIX_LAYOUT, WEIGHT_GRADIENT_CACHE_METHOD, WeightGradientCacheBufferT, WEIGHT_GRADIENT_CACHE_ELEM_TYPE, BIAS_CACHE_METHOD, BiasBufferT, BIAS_ELEM_TYPE, BIAS_GRADIENT_CACHE_METHOD, BiasGradientCacheBufferT, BIAS_GRADIENT_CACHE_ELEM_TYPE, ACCUMULATOR_ELEM_TYPE, LOGITS_CACHE_METHOD, LogitsCacheBufferT, LOGITS_CACHE_ELEM_TYPE, ActivationHiddenT, ActivationLastT, ACTIVATION_ELEM_TYPE, WEIGHT_MATRIX_ALIGNMENT, WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT, BIAS_VECTOR_ALIGNMENT>) layerData)
+backward(__MINIDXNN_IN__(vector<OutputElemT, OUTPUT_DIM>) downstreamGrad,
+         __MINIDXNN_IN__(vector<InputElemT, INPUT_DIM>) input,
+         __MINIDXNN_INOUT__(LayerDataRefImpl<NUM_LAYERS, HIDDEN_LAYER_DIM, CacheMethod::CACHE, WeightBufferT, WEIGHT_ELEM_TYPE, WEIGHT_MATRIX_LAYOUT, WEIGHT_GRADIENT_CACHE_METHOD, WeightGradientCacheBufferT, WEIGHT_GRADIENT_CACHE_ELEM_TYPE, BIAS_CACHE_METHOD, BiasBufferT, BIAS_ELEM_TYPE, BIAS_GRADIENT_CACHE_METHOD, BiasGradientCacheBufferT, BIAS_GRADIENT_CACHE_ELEM_TYPE, ACCUMULATOR_ELEM_TYPE, LOGITS_CACHE_METHOD, LogitsCacheBufferT, LOGITS_CACHE_ELEM_TYPE, ActivationHiddenT, ActivationLastT, ACTIVATION_ELEM_TYPE, WEIGHT_MATRIX_ALIGNMENT, WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT, BIAS_VECTOR_ALIGNMENT>) layerData)
 {
   return impl::Mlp<NUM_LAYERS>::backward(downstreamGrad, input, layerData);
 }
 
 } // mininn
+
+#undef __MINIDXNN_IN__
+#undef __MINIDXNN_OUT__
+#undef __MINIDXNN_INOUT__
+#undef __MINIDXNN_PRECISE__
 
 #endif // MINIDXNN_MLP_HLSL

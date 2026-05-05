@@ -1,18 +1,18 @@
 /*!
   \file example.cpp
   \author Sho Ikeda
-  \brief Texture MLP training example
+  \brief Texture MLP GPU training example
   \copyright Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
   SPDX-License-Identifier: MIT
 
-  This example demonstrates how to train an MLP to reconstruct 2D texture patterns.
+  This example demonstrates how to train an MLP on the GPU to reconstruct 2D texture patterns.
 
   Overview:
     1. Create a ground-truth texture pattern (gradient, checkerboard, etc.)
     2. Initialize an MLP with He/Kaiming weight initialization
     3. Generate random (u,v) training samples from the texture
-    4. Train the MLP using mini-batch SGD/Adam/Lion optimization
+    4. Train the MLP on GPU using mini-batch SGD/Adam/Lion optimization
     5. Reconstruct the texture by evaluating the trained MLP at every pixel
     6. Save the result as a PPM image
 
@@ -20,12 +20,14 @@
   compressing a texture into a compact neural network representation.
 
   Usage:
-    02-texture-training
+    03-texture-compression-with-input-encoding
         [--backbone-layers N] [--hidden-dim N] [--activation TYPE]
         [--epochs N] [--batch-size N] [--learning-rate F] [--optimizer TYPE]
         [--texture-width N] [--texture-height N] [--texture-pattern TYPE]
         [--output-image FILE]
-        [--cpu] [--software-linalg] [--debug] [--seed N]
+        [--input-encoding TYPE] [--grid-resolution N] [--grid-feature-dim N]
+        [--input-image FILE]
+        [--software-linalg] [--debug] [--seed N]
 */
 
 // Standard C++ library
@@ -36,13 +38,11 @@
 #include <cstdlib>
 #include <filesystem>
 #include <format>
-#include <fstream>
 #include <iostream>
 #include <memory>
 #include <numeric>
 #include <span>
 #include <string>
-#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -60,17 +60,42 @@
 #include "common/image.hpp"
 #include "common/loss.hpp"
 #include "common/matrix.hpp"
+#include "common/mlp_layer.hpp"
 #include "common/optimizer.hpp"
 #include "common/pixmap.hpp"
 #include "common/texture.hpp"
+#include "common/utility.hpp"
 #include "common/xoshiro128plus.hpp"
 // C++ fallback infrastructure (includes hlsl_compat.hpp, mlp.hlsl, utility, mlp_layer)
 #include "common/cpp_fallback.hpp"
-#include "kernel/texture_training_common.hlsl"
+#include "kernel/input_encoding_common.hlsl"
+#include "kernel/texture_inference_with_encoding_common.hlsl"
+#include "kernel/texture_training_with_encoding_common.hlsl"
 #include "kernel/texture_inference_common.hlsl"
 #include "kernel/optimizer.hlsl"
 
 namespace {
+
+// ============================================================================
+// Input encoding
+// ============================================================================
+
+enum class InputEncoding { NONE = 0, POSITIONAL = 1, GRID = 2 };
+
+constexpr size_t encodedInputDim(const InputEncoding enc, const size_t positionalFrequencies = 4, const size_t gridFeatureDim = 0) noexcept {
+  switch (enc) {
+    case InputEncoding::POSITIONAL: return 4u * positionalFrequencies;
+    case InputEncoding::GRID: return gridFeatureDim;
+    case InputEncoding::NONE: [[fallthrough]];
+    default: return 2u;
+  }
+}
+
+InputEncoding inputEncodingFromString(const std::string& s) noexcept {
+  if (s == "positional") return InputEncoding::POSITIONAL;
+  if (s == "grid") return InputEncoding::GRID;
+  return InputEncoding::NONE;
+}
 
 // ============================================================================
 // Command-line options
@@ -86,13 +111,26 @@ struct CliOptions
   size_t m_numSamples = 200000;
   size_t m_batchSize = 2000;
   size_t m_epochs = 30;
-  double m_learningRate = 0.0025;
-  std::string m_optimizer = "lion";
+  double m_learningRate = 0.005;
+  std::string m_optimizer = "adam";
   size_t m_textureWidth = 2048;
   size_t m_textureHeight = 2048;
   std::string m_texturePattern = "checkerboard";
-  std::string m_outputImagePath = "mlp-training-output.ppm";
-  bool m_useCpuMlpOperations = false;
+  std::string m_outputImagePath = "mlp-training-output.png";
+  std::string m_inputImage;
+  std::string m_inputEncoding = "grid";
+  size_t m_positionalFrequencies = 4;
+  size_t m_gridResolution = 64;
+  size_t m_gridFeatureDim = 8;
+  // Optimizer hyperparameters
+  double m_adamBeta1 = 0.9;
+  double m_adamBeta2 = 0.999;
+  double m_adamEpsilon = 1e-6;
+  double m_lionBeta1 = 0.9;
+  double m_lionBeta2 = 0.99;
+  double m_lionWeightDecay = 0.3;
+  double m_lossScale = 512.0;
+
   bool m_useCppFallback = false;
   bool m_useSoftwareLinalg = false;
   bool m_enableDebugMode = false;
@@ -101,8 +139,8 @@ struct CliOptions
 
 auto createCommandLineParser(CliOptions& options) -> std::unique_ptr<CLI::App>
 {
-  std::unique_ptr parser = std::make_unique<CLI::App>(
-      "Texture MLP training - Train MLP to reconstruct texture patterns");
+  auto parser = std::make_unique<CLI::App>(
+      "Texture compression with input encoding - Train MLP on GPU to reconstruct texture patterns");
 
   // MLP architecture
   parser->add_option("--backbone-layers", options.m_numBackboneLayers,
@@ -146,6 +184,30 @@ auto createCommandLineParser(CliOptions& options) -> std::unique_ptr<CLI::App>
       ->default_val(options.m_optimizer)
       ->check(CLI::IsMember({"sgd", "adam", "lion"}));
 
+  // Optimizer hyperparameters
+  parser->add_option("--adam-beta1", options.m_adamBeta1,
+      "Adam first moment decay rate (default: 0.9)")
+      ->default_val(options.m_adamBeta1);
+  parser->add_option("--adam-beta2", options.m_adamBeta2,
+      "Adam second moment decay rate (default: 0.999)")
+      ->default_val(options.m_adamBeta2);
+  parser->add_option("--adam-epsilon", options.m_adamEpsilon,
+      "Adam epsilon for numerical stability (default: 1e-8)")
+      ->default_val(options.m_adamEpsilon);
+  parser->add_option("--lion-beta1", options.m_lionBeta1,
+      "Lion interpolation coefficient (default: 0.9)")
+      ->default_val(options.m_lionBeta1);
+  parser->add_option("--lion-beta2", options.m_lionBeta2,
+      "Lion momentum decay rate (default: 0.99)")
+      ->default_val(options.m_lionBeta2);
+  parser->add_option("--lion-weight-decay", options.m_lionWeightDecay,
+      "Lion weight decay coefficient (default: 0.3)")
+      ->default_val(options.m_lionWeightDecay);
+  parser->add_option("--loss-scale", options.m_lossScale,
+      "Loss scale factor for FP16 gradient stability (default: 1.0)")
+      ->default_val(options.m_lossScale)
+      ->check(CLI::PositiveNumber);
+
   // Texture parameters
   parser->add_option("--texture-width", options.m_textureWidth,
       "Texture width resolution (default: 2048)")
@@ -162,13 +224,33 @@ auto createCommandLineParser(CliOptions& options) -> std::unique_ptr<CLI::App>
 
   // Output
   parser->add_option("--output-image", options.m_outputImagePath,
-      "Output reconstructed image path in PPM format (default: mlp-training-output.ppm)")
+      "Output reconstructed image path in PNG format (default: mlp-training-output.png)")
       ->default_val(options.m_outputImagePath);
 
+  // Input image
+  parser->add_option("--input-image", options.m_inputImage,
+      "Input PNG image to use as ground truth (overrides --texture-pattern)")
+      ->check(CLI::ExistingFile);
+
+  // Input encoding
+  parser->add_option("--input-encoding", options.m_inputEncoding,
+      "Input encoding applied to UV coordinates before the MLP (none, positional, grid)")
+      ->default_val(options.m_inputEncoding)
+      ->check(CLI::IsMember({"none", "positional", "grid"}));
+  parser->add_option("--positional-frequencies", options.m_positionalFrequencies,
+      "Number of frequency bands for positional encoding (default: 4, output dim = 4 * F)")
+      ->default_val(options.m_positionalFrequencies)
+      ->check(CLI::Range(static_cast<size_t>(1), static_cast<size_t>(16)));
+  parser->add_option("--grid-resolution", options.m_gridResolution,
+      "Grid resolution for grid encoding (default: 32)")
+      ->default_val(options.m_gridResolution)
+      ->check(CLI::Range(static_cast<size_t>(2), static_cast<size_t>(1024)));
+  parser->add_option("--grid-feature-dim", options.m_gridFeatureDim,
+      "Feature vector dimension per grid vertex (default: 4)")
+      ->default_val(options.m_gridFeatureDim)
+      ->check(CLI::Range(static_cast<size_t>(1), static_cast<size_t>(64)));
+
   // Execution mode
-  parser->add_flag("--cpu", options.m_useCpuMlpOperations,
-      "Use CPU reference ML operations instead of GPU")
-      ->default_val(options.m_useCpuMlpOperations);
   parser->add_flag("--cpp-fallback", options.m_useCppFallback,
       "Use C++ fallback (mlp.hlsl compiled as C++)")
       ->default_val(options.m_useCppFallback);
@@ -209,7 +291,7 @@ struct MlpConfig
   Builds the MLP layer stack from the CLI configuration:
     Layer 0:       input(2) -> hidden(hiddenLayerDim)   [user-specified activation]
     Layer 1..N-1:  hidden   -> hidden                   [user-specified activation]
-    Layer N:       hidden   -> output(2)                [Sigmoid — maps output to [0,1]]
+    Layer N:       hidden   -> output(4)                [Sigmoid — maps output to [0,1]; channel 3 is a dummy]
 
   Weights are initialized using He/Kaiming normal initialization.
   Biases are initialized to zero.
@@ -222,15 +304,16 @@ template <ex::Arithmetic DataT>
 auto initializeMlp(const CliOptions& options, ex::Xoshiro128Plus& rng)
     -> MlpConfig<DataT>
 {
-  const ex::ActivationType activationType = ex::getActivationTypeFromString(options.m_activation);
+  const auto activationType = ex::getActivationTypeFromString(options.m_activation);
 
   // Build layer configurations: input -> hidden layers -> output
   std::vector<ex::LayerConfiguration> configs;
-  configs.push_back({2, options.m_hiddenLayerDim, activationType});
+  const size_t inputDim = encodedInputDim(inputEncodingFromString(options.m_inputEncoding), options.m_positionalFrequencies, options.m_gridFeatureDim);
+  configs.push_back({inputDim, options.m_hiddenLayerDim, activationType});
   for (size_t i = 1; i < options.m_numBackboneLayers; ++i) {
     configs.push_back({options.m_hiddenLayerDim, options.m_hiddenLayerDim, activationType});
   }
-  configs.push_back({options.m_hiddenLayerDim, 2, ex::ActivationType::SIGMOID});
+  configs.push_back({options.m_hiddenLayerDim, 4, ex::ActivationType::SIGMOID});
 
   MlpConfig<DataT> config;
   config.m_numBackboneLayers = static_cast<std::uint32_t>(options.m_numBackboneLayers);
@@ -266,7 +349,7 @@ auto generateTrainingData(const ex::Texture3Ch& texture,
     -> std::pair<std::vector<DataT>, std::vector<DataT>>
 {
   std::vector<DataT> uvData(numSamples * 2);
-  std::vector<DataT> texelData(numSamples * 2);
+  std::vector<DataT> texelData(numSamples * 4);
 
   for (size_t i = 0; i < numSamples; ++i) {
     const float u = rng.draw();
@@ -274,9 +357,11 @@ auto generateTrainingData(const ex::Texture3Ch& texture,
     uvData[i * 2 + 0] = static_cast<DataT>(u);
     uvData[i * 2 + 1] = static_cast<DataT>(v);
 
-    const std::array<float, 3> texel = texture.sample(u, v);
-    texelData[i * 2 + 0] = static_cast<DataT>(texel[0]);
-    texelData[i * 2 + 1] = static_cast<DataT>(0);  // dummy channel
+    const auto texel = texture.sample(u, v);
+    texelData[i * 4 + 0] = static_cast<DataT>(texel[0]);
+    texelData[i * 4 + 1] = static_cast<DataT>(texel[1]);
+    texelData[i * 4 + 2] = static_cast<DataT>(texel[2]);
+    texelData[i * 4 + 3] = static_cast<DataT>(0);  // dummy, not optimized
   }
 
   return {std::move(uvData), std::move(texelData)};
@@ -288,30 +373,69 @@ auto generateTrainingData(const ex::Texture3Ch& texture,
 
 /*!
   \brief Shuffle UV and texel arrays together using Fisher-Yates algorithm.
+
+  Uses the provided RNG for deterministic shuffling. Both arrays are shuffled
+  with the same permutation so that corresponding (uv, texel) pairs remain paired.
+
+  \param uvData     Training UV coordinates (2 or ENCODED_DIM elements per sample)
+  \param texelData  Ground-truth texel values (outputDim elements per sample)
+  \param rng        Random number generator for shuffle
+  \param uvStride   Number of elements per UV sample (default 2)
+  \param texelStride Number of elements per texel sample (default 4)
 */
 template <ex::Arithmetic DataT>
 auto shuffleTrainingData(std::vector<DataT>& uvData,
                          std::vector<DataT>& texelData,
                          ex::Xoshiro128Plus& rng,
                          const size_t uvStride = 2,
-                         const size_t texelStride = 2) -> void
+                         const size_t texelStride = 4) -> void
 {
   const size_t numSamples = uvData.size() / uvStride;
+  // Fisher-Yates shuffle
   for (size_t i = numSamples - 1; i > 0; --i) {
     const size_t j = static_cast<size_t>(rng.draw() * static_cast<float>(i + 1));
+    // Swap UV
     for (size_t k = 0; k < uvStride; ++k)
       std::swap(uvData[i * uvStride + k], uvData[j * uvStride + k]);
+    // Swap texel
     for (size_t k = 0; k < texelStride; ++k)
       std::swap(texelData[i * texelStride + k], texelData[j * texelStride + k]);
   }
 }
 
 // ============================================================================
-// Training and texture reconstruction
+// HDR to LDR conversion
 // ============================================================================
 
-// CPU reference training path and C++ fallback training/inference paths
-#include "cpp_fallback_path.hpp"
+/*!
+  \brief Convert floating-point MLP output to 8-bit RGB.
+
+  The MLP outputs 3 channels per pixel (RGB). Each channel is clamped to [0,1]
+  and quantized to [0,255].
+
+  \param hdr  MLP output (3 values per pixel: [r, g, b, r, g, b, ...])
+  \param ldr  Target pixmap for 8-bit RGB output
+*/
+template <ex::Arithmetic Type>
+auto mapToLdr(const std::span<const Type> hdr, ex::PixmapRgb& ldr) noexcept
+{
+  std::span out = ldr.data();
+  const size_t numPixels = ldr.width() * ldr.height();
+  for (size_t i = 0; i < numPixels; ++i) {
+    using half_float::round;
+    using std::round;
+    using std::clamp;
+    auto toU8 = [&](Type v) -> std::uint8_t {
+      v = clamp(v, static_cast<Type>(0), static_cast<Type>(1));
+      return static_cast<std::uint8_t>(round(v * static_cast<Type>(255)));
+    };
+    out[i] = {{toU8(hdr[4 * i + 0]), toU8(hdr[4 * i + 1]), toU8(hdr[4 * i + 2])}};
+  }
+}
+
+// ============================================================================
+// Shader kernel definitions
+// ============================================================================
 
 template <ex::Arithmetic Type>
 auto buildKernelDefinitions(std::span<ex::MlpLayer<Type, Type, Type, Type>> mlpData,
@@ -327,10 +451,15 @@ auto buildKernelDefinitions(std::span<ex::MlpLayer<Type, Type, Type, Type>> mlpD
                             const size_t biasAlignment,
                             const bool useSoftwareLinalg,
                             const bool hasBias,
+                            const InputEncoding inputEncoding = InputEncoding::NONE,
+                            const size_t positionalFrequencies = 4,
+                            const size_t gridResolution = 0,
+                            const size_t gridBufferSize = 0,
                             const float optimizerBeta1 = 0.0f,
                             const float optimizerBeta2 = 0.0f,
                             const float optimizerEpsilon = 0.0f,
-                            const float optimizerWeightDecay = 0.0f) -> std::vector<ex::OptionString>
+                            const float optimizerWeightDecay = 0.0f,
+                            const float lossScale = 1.0f) -> std::vector<ex::OptionString>
 {
   const size_t inputDim = mlpData.front().inputDimension();
   const size_t outputDim = mlpData.back().outputDimension();
@@ -341,7 +470,7 @@ auto buildKernelDefinitions(std::span<ex::MlpLayer<Type, Type, Type, Type>> mlpD
   constexpr size_t numThreadsX = 32;
 
   std::vector<ex::OptionString> defs;
-  defs.reserve(19);
+  defs.reserve(26);
 
   // MLP architecture
   defs.push_back(ex::createOptionString("MINIDXNN_INPUT_DIMENSION={}", inputDim));
@@ -349,6 +478,14 @@ auto buildKernelDefinitions(std::span<ex::MlpLayer<Type, Type, Type, Type>> mlpD
   defs.push_back(ex::createOptionString("MINIDXNN_NUM_LAYERS={}", numLayers));
   defs.push_back(ex::createOptionString("MINIDXNN_HIDDEN_LAYER_DIMENSIONS={}", hiddenLayerDim));
   defs.push_back(ex::createOptionString("MINIDXNN_HAS_BIAS={}", hasBias ? 1 : 0));
+  defs.push_back(ex::createOptionString("MINIDXNN_INPUT_ENCODING={}", static_cast<int>(inputEncoding)));
+  if (inputEncoding == InputEncoding::POSITIONAL) {
+    defs.push_back(ex::createOptionString("MINIDXNN_POSITIONAL_ENCODING_NUM_FREQUENCIES={}", positionalFrequencies));
+  }
+  if (inputEncoding == InputEncoding::GRID) {
+    defs.push_back(ex::createOptionString("MINIDXNN_GRID_RESOLUTION={}", gridResolution));
+    defs.push_back(ex::createOptionString("MINIDXNN_GRID_BUFFER_SIZE={}", gridBufferSize));
+  }
   defs.push_back(ex::createOptionString("MINIDXNN_LEARNING_RATE={}", learningRate));
 
   // Activation functions
@@ -375,9 +512,14 @@ auto buildKernelDefinitions(std::span<ex::MlpLayer<Type, Type, Type, Type>> mlpD
   defs.push_back(ex::createOptionString("MINIDXNN_OPTIMIZER_BETA2={:.10f}f", optimizerBeta2));
   defs.push_back(ex::createOptionString("MINIDXNN_OPTIMIZER_EPSILON={:.10e}f", optimizerEpsilon));
   defs.push_back(ex::createOptionString("MINIDXNN_OPTIMIZER_WEIGHT_DECAY={:.10f}f", optimizerWeightDecay));
+  defs.push_back(ex::createOptionString("MINIDXNN_LOSS_SCALE={:.10f}f", lossScale));
 
   return defs;
 }
+
+// ============================================================================
+// GPU training and texture reconstruction
+// ============================================================================
 
 /*!
   \brief Train the MLP on GPU and reconstruct the texture.
@@ -391,13 +533,14 @@ auto trainAndReconstructTextureGpu(std::span<ex::MlpLayer<Type, Type, Type, Type
                                    const std::vector<Type>& uvData,
                                    const std::vector<Type>& texelData,
                                    const bool hasBias,
-                                   const CliOptions& options) -> ex::PixmapU8
+                                   const CliOptions& options) -> ex::PixmapRgb
 {
   const bool useSoftwareLinalg = options.m_useSoftwareLinalg;
   ex::MatrixLayout weightMatrixLayout = useSoftwareLinalg ? ex::MatrixLayout::ROW_MAJOR : ex::MatrixLayout::OUTER_PRODUCT_OPTIMAL;
   constexpr size_t weightChunkSize = ex::MATRIX_ALIGNMENT;
   constexpr size_t biasChunkSize = ex::VECTOR_ALIGNMENT;
-  const ex::OptimizerType optimizerType = ex::getOptimizerTypeFromString(options.m_optimizer);
+  const auto optimizerType = ex::getOptimizerTypeFromString(options.m_optimizer);
+  const InputEncoding inputEncoding = inputEncodingFromString(options.m_inputEncoding);
 
   // Initialize GFX context
   std::shared_ptr context = ex::createGfxContext(options.m_enableDebugMode);
@@ -429,6 +572,7 @@ auto trainAndReconstructTextureGpu(std::span<ex::MlpLayer<Type, Type, Type, Type
   std::shared_ptr uvBuffer = ex::createGfxBuffer<Type>(*context, uvData);
   std::shared_ptr targetBuffer = ex::createGfxBuffer<Type>(*context, texelData);
   std::shared_ptr weightBuffer = ex::packAsD3D12MatrixBuffer<Type>(*context, matrixInfoList, true);
+  weightMatrixLayout = matrixInfoList.front().m_layout;
   std::shared_ptr weightGradBuffer = ex::createGfxBuffer<Type>(*context, weightBuffer->getSize() / sizeof(Type));
   std::shared_ptr biasBuffer = ex::packAsD3D12VectorBuffer<Type>(*context, vectorInfoList);
   std::shared_ptr biasGradBuffer = ex::createGfxBuffer<Type>(*context, biasBuffer->getSize() / sizeof(Type));
@@ -463,13 +607,51 @@ auto trainAndReconstructTextureGpu(std::span<ex::MlpLayer<Type, Type, Type, Type
     gfxFinish(*context);
   }
 
-  // Optimizer hyperparameters
-  constexpr float adamBeta1 = 0.9f, adamBeta2 = 0.999f, adamEpsilon = 1e-8f;
-  constexpr float lionBeta1 = 0.9f, lionBeta2 = 0.99f, lionWeightDecay = 0.3f;
+  // Grid encoding buffers
+  const size_t gridResolution = options.m_gridResolution;
+  const size_t gridFeatureDim = options.m_gridFeatureDim;
+  const size_t gridElements = gridResolution * gridResolution * gridFeatureDim;
+  const size_t gridBufferSize = gridElements * sizeof(float);
+  std::shared_ptr<GfxBuffer> gridBuffer;
+  std::shared_ptr<GfxBuffer> gridGradBuffer;
+  std::shared_ptr<GfxBuffer> gridFirstMomentBuffer;
+  std::shared_ptr<GfxBuffer> gridSecondMomentBuffer;
 
-  // Create and run the example kernel
+  if (inputEncoding == InputEncoding::GRID) {
+    ex::Xoshiro128Plus gridRng{options.m_seed ^ 0xA5A5A5A5u};
+    std::vector<float> gridFeatures(gridElements);
+    for (auto& f : gridFeatures) {
+      f = (gridRng.draw() - 0.5f) * 0.02f;
+    }
+    gridBuffer = ex::createGfxBuffer<float>(*context, gridFeatures);
+    gridGradBuffer = ex::createGfxBuffer<float>(*context, gridElements);
+
+    if (optimizerType == ex::OptimizerType::ADAM) {
+      gridFirstMomentBuffer = ex::createGfxBuffer<float>(*context, gridElements);
+      gridSecondMomentBuffer = ex::createGfxBuffer<float>(*context, gridElements);
+      gfxCommandClearBuffer(*context, *gridFirstMomentBuffer);
+      gfxCommandClearBuffer(*context, *gridSecondMomentBuffer);
+      gfxFinish(*context);
+    } else if (optimizerType == ex::OptimizerType::LION) {
+      gridFirstMomentBuffer = ex::createGfxBuffer<float>(*context, gridElements);
+      gfxCommandClearBuffer(*context, *gridFirstMomentBuffer);
+      gfxFinish(*context);
+    }
+  }
+
+  // Optimizer hyperparameters (from CLI)
+  const float adamBeta1 = static_cast<float>(options.m_adamBeta1);
+  const float adamBeta2 = static_cast<float>(options.m_adamBeta2);
+  const float adamEpsilon = static_cast<float>(options.m_adamEpsilon);
+  const float lionBeta1 = static_cast<float>(options.m_lionBeta1);
+  const float lionBeta2 = static_cast<float>(options.m_lionBeta2);
+  const float lionWeightDecay = static_cast<float>(options.m_lionWeightDecay);
+
+  // Create and run the training kernel
   {
-    const size_t numOptElements = (std::max)(weightElements, biasElements);
+    const size_t numOptElements = (inputEncoding == InputEncoding::GRID)
+        ? (std::max)({weightElements, biasElements, gridElements})
+        : (std::max)(weightElements, biasElements);
     const auto [optBeta1, optBeta2, optEpsilon, optWeightDecay] = [&]() -> std::tuple<float, float, float, float> {
       if (optimizerType == ex::OptimizerType::ADAM)
         return {adamBeta1, adamBeta2, adamEpsilon, 0.0f};
@@ -478,11 +660,9 @@ auto trainAndReconstructTextureGpu(std::span<ex::MlpLayer<Type, Type, Type, Type
       else
         return {0.0f, 0.0f, 0.0f, 0.0f};
     }();
-    const std::vector definitions = buildKernelDefinitions(mlpData, options.m_batchSize, static_cast<float>(options.m_learningRate), weightBuffer->getSize(), biasBuffer->getSize(), weightChunkSize, biasChunkSize, matrixInfoList.front().m_layout, matrixInfoList.front().m_alignment, matrixInfoList.front().m_vectorStrideAlignment, vectorInfoList.front().m_alignment, options.m_useSoftwareLinalg, hasBias, optBeta1, optBeta2, optEpsilon, optWeightDecay);
+    const std::vector definitions = buildKernelDefinitions(mlpData, options.m_batchSize, static_cast<float>(options.m_learningRate), weightBuffer->getSize(), biasBuffer->getSize(), weightChunkSize, biasChunkSize, matrixInfoList.front().m_layout, matrixInfoList.front().m_alignment, matrixInfoList.front().m_vectorStrideAlignment, vectorInfoList.front().m_alignment, options.m_useSoftwareLinalg, hasBias, inputEncoding, options.m_positionalFrequencies, gridResolution, gridBufferSize, optBeta1, optBeta2, optEpsilon, optWeightDecay);
 
-    // Create shader programs and kernels for training
-    // Use separate programs for backward and optimizer to isolate parameter bindings
-    std::shared_ptr program = ex::createGfxProgram(*context, "02_texture_training", shaderDir, includeDirList);
+    std::shared_ptr program = ex::createGfxProgram(*context, "03_texture_compression_with_input_encoding", shaderDir, includeDirList);
     const ex::OptionString backwardKernelName = ex::createOptionString("trainingF{}Kernel", 8 * sizeof(Type));
     std::shared_ptr backwardKernel = ex::createGfxComputeKernel(*context, *program, backwardKernelName.data(), definitions);
 
@@ -495,37 +675,49 @@ auto trainAndReconstructTextureGpu(std::span<ex::MlpLayer<Type, Type, Type, Type
     float totalTrainingKernelTimeMs = 0.0f;
     float totalOptimizerKernelTimeMs = 0.0f;
 
+    // Persistent staging buffer for loss readback — allocated once, reused every epoch
+    std::shared_ptr lossStaging = ex::createGfxBuffer<float>(*context, 1, kGfxCpuAccess_Read);
+
     std::cout << "Backend: GPU\n";
     std::cout << "Starting training...\n";
     for (size_t epoch = 0; epoch < options.m_epochs; ++epoch) {
-      float epochLoss = 0.0f;
       size_t numBatches = 0;
+
+      // Clear loss once per epoch so it accumulates across all batches
+      gfxCommandClearBuffer(*context, *lossBuffer);
+      gfxFinish(*context);
 
       for (size_t batchStart = 0; batchStart < numSamples; batchStart += options.m_batchSize) {
         const size_t batchEnd = std::min(batchStart + options.m_batchSize, numSamples);
         const size_t currentBatchSize = batchEnd - batchStart;
 
-        // Zero gradients
+        // Zero weight/bias/grid gradients (not lossBuffer — it accumulates for the whole epoch)
         gfxCommandClearBuffer(*context, *weightGradBuffer);
         gfxCommandClearBuffer(*context, *biasGradBuffer);
-        gfxCommandClearBuffer(*context, *lossBuffer);
+        if (inputEncoding == InputEncoding::GRID)
+          gfxCommandClearBuffer(*context, *gridGradBuffer);
         gfxFinish(*context);
 
         const size_t batchIndex = batchStart / options.m_batchSize;
         {
           float kernelTimeMs = 0.0f;
           const size_t threadGroupSize = ex::align(currentBatchSize, numThreadsX) / numThreadsX;
+          std::vector<ex::BufferBindingDataT> trainingBuffers = {
+            ex::bind(*uvBuffer, "UvBuffer"),
+            ex::bind(*targetBuffer, "TargetBuffer"),
+            ex::bind(*weightBuffer, "WeightBuffer"),
+            ex::bind(*biasBuffer, "BiasBuffer"),
+            ex::bind(*weightGradBuffer, "WeightGradBuffer"),
+            ex::bind(*biasGradBuffer, "BiasGradBuffer"),
+            ex::bind(*logitsCacheBuffer, "LogitsCacheBuffer"),
+            ex::bind(*lossBuffer, "LossBuffer"),
+          };
+          if (inputEncoding == InputEncoding::GRID) {
+            trainingBuffers.push_back(ex::bind(*gridBuffer, "GridBuffer"));
+            trainingBuffers.push_back(ex::bind(*gridGradBuffer, "GridGradBuffer"));
+          }
           ex::runKernel(*context, *program, *backwardKernel, threadGroupSize,
-              {
-                ex::bind(*uvBuffer, "UvBuffer"),
-                ex::bind(*targetBuffer, "TargetBuffer"),
-                ex::bind(*weightBuffer, "WeightBuffer"),
-                ex::bind(*biasBuffer, "BiasBuffer"),
-                ex::bind(*weightGradBuffer, "WeightGradBuffer"),
-                ex::bind(*biasGradBuffer, "BiasGradBuffer"),
-                ex::bind(*logitsCacheBuffer, "LogitsCacheBuffer"),
-                ex::bind(*lossBuffer, "LossBuffer"),
-              },
+              std::span<const ex::BufferBindingDataT>{trainingBuffers},
               {
                 ex::bind(static_cast<std::int32_t>(matrixInfoList.front().m_dataSize), "TEST_WEIGHT_MATRIX_SIZE_FIRST"),
                 ex::bind(static_cast<std::int32_t>((matrixInfoList.size() > 1) ? matrixInfoList.at(1).m_dataSize : 0), "TEST_WEIGHT_MATRIX_SIZE_HIDDEN"),
@@ -536,15 +728,7 @@ auto trainAndReconstructTextureGpu(std::span<ex::MlpLayer<Type, Type, Type, Type
               kernelTimeMs);
           totalTrainingKernelTimeMs += kernelTimeMs;
         }
-        {
-          std::shared_ptr staging = ex::createGfxBuffer<float>(*context, 1, kGfxCpuAccess_Read);
-          ex::copyBuffer(*context, *lossBuffer, *staging);
-          const std::span loss = ex::mapToCpu<float>(*context, *staging);
-          // Average loss for this batch
-          const float batchLoss = loss[0] / static_cast<float>(currentBatchSize);
-          epochLoss += batchLoss;
-          numBatches++;
-        }
+        numBatches++;
 
         // Update weights using optimizer
         {
@@ -568,6 +752,12 @@ auto trainAndReconstructTextureGpu(std::span<ex::MlpLayer<Type, Type, Type, Type
               ex::bind(*biasFirstMomentBuffer, "BiasFirstMoment"),
               ex::bind(*biasSecondMomentBuffer, "BiasSecondMoment"),
             };
+            if (inputEncoding == InputEncoding::GRID) {
+              optBuffersVec.push_back(ex::bind(*gridBuffer, "RWGridBuffer"));
+              optBuffersVec.push_back(ex::bind(*gridGradBuffer, "GridGradBuffer"));
+              optBuffersVec.push_back(ex::bind(*gridFirstMomentBuffer, "GridFirstMoment"));
+              optBuffersVec.push_back(ex::bind(*gridSecondMomentBuffer, "GridSecondMoment"));
+            }
           } else if (optimizerType == ex::OptimizerType::LION) {
             optBuffersVec = {
               ex::bind(*weightBuffer, "RWWeightBuffer"),
@@ -577,6 +767,11 @@ auto trainAndReconstructTextureGpu(std::span<ex::MlpLayer<Type, Type, Type, Type
               ex::bind(*weightFirstMomentBuffer, "WeightFirstMoment"),
               ex::bind(*biasFirstMomentBuffer, "BiasFirstMoment"),
             };
+            if (inputEncoding == InputEncoding::GRID) {
+              optBuffersVec.push_back(ex::bind(*gridBuffer, "RWGridBuffer"));
+              optBuffersVec.push_back(ex::bind(*gridGradBuffer, "GridGradBuffer"));
+              optBuffersVec.push_back(ex::bind(*gridFirstMomentBuffer, "GridFirstMoment"));
+            }
           } else {
             optBuffersVec = {
               ex::bind(*weightBuffer, "RWWeightBuffer"),
@@ -584,6 +779,10 @@ auto trainAndReconstructTextureGpu(std::span<ex::MlpLayer<Type, Type, Type, Type
               ex::bind(*weightGradBuffer, "WeightGradBuffer"),
               ex::bind(*biasGradBuffer, "BiasGradBuffer"),
             };
+            if (inputEncoding == InputEncoding::GRID) {
+              optBuffersVec.push_back(ex::bind(*gridBuffer, "RWGridBuffer"));
+              optBuffersVec.push_back(ex::bind(*gridGradBuffer, "GridGradBuffer"));
+            }
           }
 
           // Int bindings for optimizer (timestep)
@@ -599,7 +798,11 @@ auto trainAndReconstructTextureGpu(std::span<ex::MlpLayer<Type, Type, Type, Type
         }
       }
 
-      const float avgLoss = epochLoss / static_cast<float>(numBatches);
+      // Read back accumulated epoch loss once (one GPU stall per epoch instead of per batch)
+      ex::copyBuffer(*context, *lossBuffer, *lossStaging);
+      const std::span epochLossSpan = ex::mapToCpu<float>(*context, *lossStaging);
+      const size_t totalSamples = std::min(numSamples, numBatches * options.m_batchSize);
+      const float avgLoss = epochLossSpan[0] / static_cast<float>(totalSamples);
       std::cout << std::format("Epoch [{}/{}], Loss: {:.6f}\n", epoch + 1, options.m_epochs, avgLoss);
     }
     std::cout << "Training completed!\n";
@@ -609,27 +812,31 @@ auto trainAndReconstructTextureGpu(std::span<ex::MlpLayer<Type, Type, Type, Type
 
   // --- Reconstruct texture using the trained MLP ---
   std::cout << "Reconstructing texture...\n";
-  ex::PixmapU8 texture{options.m_textureWidth, options.m_textureHeight};
+  ex::PixmapRgb texture{options.m_textureWidth, options.m_textureHeight};
   const size_t numPixels = static_cast<size_t>(options.m_textureWidth) * static_cast<size_t>(options.m_textureHeight);
   const std::vector reconstructUv = ex::createUvData<Type>(texture.width(), texture.height());
   std::shared_ptr reconstructUvBuffer = ex::createGfxBuffer<Type>(*context, reconstructUv);
-  std::shared_ptr outputBuffer = ex::createGfxBuffer<Type>(*context, numPixels * 2);
+  std::shared_ptr outputBuffer = ex::createGfxBuffer<Type>(*context, numPixels * 4);
 
   {
-    const std::vector definitions = buildKernelDefinitions(mlpData, options.m_batchSize, static_cast<float>(options.m_learningRate), weightBuffer->getSize(), biasBuffer->getSize(), weightChunkSize, biasChunkSize, matrixInfoList.front().m_layout, matrixInfoList.front().m_alignment, matrixInfoList.front().m_vectorStrideAlignment, vectorInfoList.front().m_alignment, options.m_useSoftwareLinalg, hasBias);
-    std::shared_ptr program = ex::createGfxProgram(*context, "02_texture_training", shaderDir, includeDirList);
+    const std::vector definitions = buildKernelDefinitions(mlpData, options.m_batchSize, static_cast<float>(options.m_learningRate), weightBuffer->getSize(), biasBuffer->getSize(), weightChunkSize, biasChunkSize, matrixInfoList.front().m_layout, matrixInfoList.front().m_alignment, matrixInfoList.front().m_vectorStrideAlignment, vectorInfoList.front().m_alignment, options.m_useSoftwareLinalg, hasBias, inputEncoding, options.m_positionalFrequencies, gridResolution, gridBufferSize);
+    std::shared_ptr program = ex::createGfxProgram(*context, "03_texture_compression_with_input_encoding", shaderDir, includeDirList);
     const ex::OptionString inferenceKernelName = ex::createOptionString("inferenceF{}Kernel", 8 * sizeof(Type));
     std::shared_ptr inferenceKernel = ex::createGfxComputeKernel(*context, *program, inferenceKernelName.data(), definitions);
 
     const size_t threadGroupSize = ex::align(numPixels, numThreadsX) / numThreadsX;
     float inferenceKernelTimeMs = 0.0f;
+    std::vector<ex::BufferBindingDataT> inferenceBuffers = {
+      ex::bind(*reconstructUvBuffer, "UvBuffer"),
+      ex::bind(*outputBuffer, "OutputBuffer"),
+      ex::bind(*weightBuffer, "WeightBuffer"),
+      ex::bind(*biasBuffer, "BiasBuffer"),
+    };
+    if (inputEncoding == InputEncoding::GRID) {
+      inferenceBuffers.push_back(ex::bind(*gridBuffer, "GridBuffer"));
+    }
     ex::runKernel(*context, *program, *inferenceKernel, threadGroupSize,
-        {
-          ex::bind(*reconstructUvBuffer, "UvBuffer"),
-          ex::bind(*outputBuffer, "OutputBuffer"),
-          ex::bind(*weightBuffer, "WeightBuffer"),
-          ex::bind(*biasBuffer, "BiasBuffer"),
-        },
+        std::span<const ex::BufferBindingDataT>{inferenceBuffers},
         {
           ex::bind(static_cast<std::int32_t>(matrixInfoList.front().m_dataSize), "TEST_WEIGHT_MATRIX_SIZE_FIRST"),
           ex::bind(static_cast<std::int32_t>((matrixInfoList.size() > 1) ? matrixInfoList.at(1).m_dataSize : 0), "TEST_WEIGHT_MATRIX_SIZE_HIDDEN"),
@@ -640,25 +847,29 @@ auto trainAndReconstructTextureGpu(std::span<ex::MlpLayer<Type, Type, Type, Type
   }
 
   // Read back results
-  std::shared_ptr stagingOutput = ex::createGfxBuffer<Type>(*context, numPixels * 2, kGfxCpuAccess_Read);
+  std::shared_ptr stagingOutput = ex::createGfxBuffer<Type>(*context, numPixels * 4, kGfxCpuAccess_Read);
   ex::copyBuffer(*context, *outputBuffer, *stagingOutput);
   const std::span outputData = ex::mapToCpu<Type>(*context, *stagingOutput);
-  ex::mapToLdr<Type>(outputData, texture);
+  mapToLdr<Type>(outputData, texture);
 
   return texture;
 }
 #endif // !MINIDXNN_CPP_FALLBACK_ONLY
 
+// ============================================================================
+// C++ fallback training and inference paths
+// ============================================================================
+
+#include "cpp_fallback_path.hpp"
+
+// ============================================================================
+// Unified training dispatcher
+// ============================================================================
+
 /*!
   \brief Train the MLP and reconstruct the texture.
 
-  Dispatches to CPU or GPU implementation based on the --cpu flag.
-
-  \param mlpData    MLP layers (modified in-place during training)
-  \param uvData     Training UV coordinates
-  \param texelData  Ground-truth texel values
-  \param options    CLI options controlling execution path and hyperparameters
-  \return Reconstructed texture as an 8-bit grayscale pixmap
+  Dispatches to GPU or C++ fallback implementation based on build and CLI flags.
 */
 template <ex::Arithmetic DataT>
 auto trainAndReconstructTexture(
@@ -666,12 +877,9 @@ auto trainAndReconstructTexture(
     const std::vector<DataT>& uvData,
     const std::vector<DataT>& texelData,
     const bool hasBias,
-    const CliOptions& options) -> ex::PixmapU8
+    const CliOptions& options) -> ex::PixmapRgb
 {
-  if (options.m_useCpuMlpOperations) {
-    return trainAndReconstructTextureCpu<DataT>(mlpData, uvData, texelData, hasBias, options);
-  }
-  else if (ex::isCppFallbackForced || options.m_useCppFallback) {
+  if (ex::isCppFallbackForced || options.m_useCppFallback) {
     return trainAndReconstructTextureCppFallback<DataT>(mlpData, uvData, texelData, hasBias, options);
   }
 #ifndef MINIDXNN_CPP_FALLBACK_ONLY
@@ -696,12 +904,19 @@ auto main(const int argc, const char** argv) -> int
 
   using DataT = half_float::half;
 
-  // Step 1: Create ground-truth texture pattern
-  std::cout << std::format("Creating {} texture ({}x{})...\n",
-      options.m_texturePattern, options.m_textureWidth, options.m_textureHeight);
-  const ex::TexturePattern texturePattern = ex::getTexturePatternFromString(options.m_texturePattern);
-  const ex::Texture3Ch texture = ex::createTexture(
-      texturePattern, options.m_textureWidth, options.m_textureHeight);
+  // Step 1: Create or load ground-truth texture
+  ex::Texture3Ch texture = [&]() -> ex::Texture3Ch {
+    if (!options.m_inputImage.empty()) {
+      auto loaded = ex::loadTextureFromPng(options.m_inputImage);
+      options.m_textureWidth = loaded.width();
+      options.m_textureHeight = loaded.height();
+      return loaded;
+    }
+    std::cout << std::format("Creating {} texture ({}x{})...\n",
+        options.m_texturePattern, options.m_textureWidth, options.m_textureHeight);
+    const auto texturePattern = ex::getTexturePatternFromString(options.m_texturePattern);
+    return ex::createTexture(texturePattern, options.m_textureWidth, options.m_textureHeight);
+  }();
 
   // Step 2: Initialize RNG and create MLP with He/Kaiming initialization
   //   The RNG seed order matters: weight init first, then training data generation,
@@ -721,25 +936,28 @@ auto main(const int argc, const char** argv) -> int
   // Step 3b: Shuffle training data if requested
   if (options.m_shuffle) {
     std::cout << "Shuffling training data...\n";
-    shuffleTrainingData<DataT>(uvData, texelData, rng, 2, 2);
+    shuffleTrainingData<DataT>(uvData, texelData, rng, 2, 4);
   }
 
   // Step 4: Train the MLP and reconstruct the texture
-  std::cout << std::format("Training: epochs={}, batch={}, lr={}, optimizer={}\n",
-      options.m_epochs, options.m_batchSize, options.m_learningRate, options.m_optimizer);
-  const ex::PixmapU8 outputTexture = trainAndReconstructTexture<DataT>(
+  if (inputEncodingFromString(options.m_inputEncoding) == InputEncoding::GRID) {
+    std::cout << std::format("Training: epochs={}, batch={}, lr={}, optimizer={}, input-encoding={}, grid-resolution={}, grid-feature-dim={}\n",
+        options.m_epochs, options.m_batchSize, options.m_learningRate, options.m_optimizer,
+        options.m_inputEncoding, options.m_gridResolution, options.m_gridFeatureDim);
+  } else {
+    std::cout << std::format("Training: epochs={}, batch={}, lr={}, optimizer={}, input-encoding={}\n",
+        options.m_epochs, options.m_batchSize, options.m_learningRate, options.m_optimizer,
+        options.m_inputEncoding);
+  }
+  const ex::PixmapRgb outputTexture = trainAndReconstructTexture<DataT>(
       mlpConfig.m_layers, uvData, texelData, mlpConfig.m_hasBias, options);
 
-  // Step 5: Save the reconstructed texture as a PPM image
-  {
-    std::ofstream textureOut{options.m_outputImagePath, std::ios::binary};
-    if (!textureOut.is_open()) {
-      std::cerr << std::format("[Error] Failed to open output file: {}\n", options.m_outputImagePath);
-      return 1;
-    }
-    ex::writeAsPpm(outputTexture, textureOut);
-    std::cout << std::format("Output image saved to: {}\n", options.m_outputImagePath);
+  // Step 5: Save the reconstructed texture as a PNG image
+  if (!ex::writeAsPng(outputTexture, options.m_outputImagePath)) {
+    std::cerr << std::format("[Error] Failed to write output file: {}\n", options.m_outputImagePath);
+    return 1;
   }
+  std::cout << std::format("Output image saved to: {}\n", options.m_outputImagePath);
 
   return 0;
 }

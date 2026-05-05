@@ -1,21 +1,21 @@
-# MiniDXNN — MLP Inference & Training on DirectX 12 with Cooperative Vector
+# MiniDXNN — MLP Inference & Training on DirectX 12 with LinAlg Matrix
 
 ![CMake build on Windows](../../actions/workflows/cmake.yaml/badge.svg)
 
 <p align="center"><img src="./docs/minidxnn-logo.png" width="200"></p>
 
-An implementation of **MLP** (Multi-Layer Perceptron) inference and training using DirectX 12 [Cooperative Vector][coop-vec-spec]. This library demonstrates GPU-accelerated neural network inference and training with cutting-edge shader features.
+An implementation of **MLP** (Multi-Layer Perceptron) inference and training using DirectX 12 [LinAlg Matrix][linalg-spec]. This library demonstrates GPU-accelerated neural network inference and training with cutting-edge shader features.
 
-- 🚀 **High Performance**: GPU-accelerated inference and training using [Cooperative Vector][coop-vec-overview]
+- 🚀 **High Performance**: GPU-accelerated inference and training using [LinAlg Matrix][linalg-overview]
 - 🔧 **Flexible Architecture**: Configurable layers, activations, and data types
 - 🎯 **Single-header HLSL**: Easy to integrate into any DX12 project
 
 ## Requirements
 
 - **OS**: Windows 11 with [Developer Mode][win-dev-mode] enabled
-- **GPU**: Supports Shader Model 6.9 and Cooperative Vector in D3D12 (AMD Radeon™ RX 9000 Series GPUs or equivalent NVIDIA)
+- **GPU**: Supports Shader Model 6.10 and LinAlg Matrix in D3D12 (AMD Radeon™ RX 9000 Series GPUs or equivalent NVIDIA)
 - **Build**: CMake ≥ 3.21, Visual Studio 2022 (C++20), Windows SDK
-- **DX12 Runtime**: [Agility SDK 1.717.1-preview][dx12-agility-sdk-download], [DXC v1.8.2505.1][dx12-dxc-download]
+- **DX12 Runtime**: [Agility SDK 1.720-preview][dx12-agility-sdk-download], [DXC v1.10.2605.2][dx12-dxc-download]
 - **Python**: Python 3.8+ with PyTorch (optional, for example python training)
 
 ## Getting Started
@@ -39,11 +39,13 @@ Example binaries are output to `build/example/Release/`. Run them from `build/ex
 
 ## DX12 Setup
 
-⚠️ **Important**: As of early 2026, Cooperative Vector requires experimental feature support.
+⚠️ **Important**: As of early 2026, LinAlg Matrix requires experimental feature support.
 
-1. Install a [Cooperative Vector supported driver][coop-vec-driver]
+1. Install a [LinAlg Matrix supported driver][linalg-driver]
 2. Enable [Experimental Shader Model][dx-experimental-shader-model] with [D3D12EnableExperimentalFeatures][dx-enable-experimental-features] **before** creating the device
-3. Compile shaders with **Shader Model 6.9**
+3. Compile shaders with **Shader Model 6.10**
+
+For a detailed walkthrough — including feature checks, weight matrix conversion (`GetLinearAlgebraMatrixConversionDestinationInfo` / `ConvertLinearAlgebraMatrix`), bias alignment, and full sample code — see the **[LinAlg Matrix MLP Guide](docs/linalg_matrix_mlp.md)**.
 
 ## HLSL Usage
 
@@ -147,7 +149,7 @@ MiniDXNN/
 | **Operations** | Forward pass (inference), backward pass (training with gradient accumulation) |
 | **Activations** | Identity, Sigmoid, ReLU, Leaky ReLU (custom activations supported — e.g. Tanh) |
 | **Data type** | float16 (`DATA_TYPE_FLOAT16`) — currently the only tested type |
-| **Matrix layout** | Row-major (`MATRIX_LAYOUT_ROW_MAJOR`) — currently the only tested layout |
+| **Matrix layout** | Row-major, Column-major, Mul-optimal, Outer-product-optimal |
 
 ## Examples
 
@@ -155,15 +157,18 @@ MiniDXNN/
 |---|------|-------------|
 | 01 | [Texture Inference](./example/01_texture_inference) | Load a pre-trained MLP binary and reconstruct a texture on the GPU |
 | 02 | [Texture Training](./example/02_texture_training) | Train an MLP on-GPU to learn a 2D texture pattern, then reconstruct it |
+| 03 | [Texture Compression with Input Encoding](./example/03_texture_compression_with_input_encoding) | Train with positional/grid input encoding for higher-quality texture compression |
 
 See [example/README.md](./example/README.md) for step-by-step instructions.
 
 ## Documentation
 
+- [LinAlg Matrix MLP Guide](docs/linalg_matrix_mlp.md) — Step-by-step setup, weight conversion, bias alignment, and shader compilation
 - [HLSL API Reference](docs/mlp_hlsl.md) — `mlp.hlsl` types, functions, and memory layout
 - [Example Guide](example/README.md) — building and running the examples
-- [Cooperative Vector Spec][coop-vec-spec] — HLSL specification
-- [D3D12 Cooperative Vector Blog][coop-vec-overview] — overview and getting started
+- [LinAlg Matrix Spec][linalg-spec] — HLSL specification
+- [D3D12 LinAlg Matrix Overview][linalg-overview] — runtime feature support and getting started
+- [LinAlg Examples][linalg-examples] — official example code
 
 ## License
 
@@ -177,16 +182,22 @@ Copyright (c) 2026 Advanced Micro Devices, Inc. All rights reserved.
 - [gfx](https://github.com/gboisse/gfx) — MIT
 - [CLI11](https://github.com/CLIUtils/CLI11) — BSD-3-Clause
 - [GoogleTest](https://github.com/google/googletest) — BSD-3-Clause
+- [stb_image](https://github.com/nothings/stb) — MIT/Public Domain
 
 See [NOTICE.md](NOTICE.md) for details.
 
+### CMake dependency downloads
+
+When building with GPU support (without `MINIDXNN_CPP_FALLBACK_ONLY`), CMake auto-downloads dependencies to `third_party/gfx_dep/gfx/third_party/`.
+
 ---
 
-[coop-vec-spec]: https://github.com/microsoft/hlsl-specs/blob/main/proposals/0029-cooperative-vector.md
-[coop-vec-overview]: https://devblogs.microsoft.com/directx/cooperative-vector/
-[coop-vec-driver]: https://devblogs.microsoft.com/directx/cooperative-vector/#get-running
+[linalg-spec]: https://github.com/microsoft/hlsl-specs/blob/main/proposals/0035-linalg-matrix.md
+[linalg-overview]: https://microsoft.github.io/DirectX-Specs/d3d/D3D12LinearAlgebraRuntimeFeatureSupport.html#tier-1-support
+[linalg-driver]: https://devblogs.microsoft.com/directx/shader-model-6-10-agilitysdk-720-preview/
+[linalg-examples]: https://github.com/llvm-beanz/linalg-examples
 [win-dev-mode]: https://learn.microsoft.com/en-us/windows/apps/get-started/enable-your-device-for-development
 [dx-enable-experimental-features]: https://learn.microsoft.com/en-us/windows/win32/api/d3d12/nf-d3d12-d3d12enableexperimentalfeatures
 [dx-experimental-shader-model]: https://devblogs.microsoft.com/directx/ser/#availability
-[dx12-agility-sdk-download]: https://www.nuget.org/api/v2/package/Microsoft.Direct3D.D3D12/1.717.1-preview
-[dx12-dxc-download]: https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.8.2505.1/dxc_2025_07_14.zip
+[dx12-agility-sdk-download]: https://devblogs.microsoft.com/directx/directx12agility/
+[dx12-dxc-download]: https://github.com/microsoft/DirectXShaderCompiler/releases/tag/v1.10.2605.2

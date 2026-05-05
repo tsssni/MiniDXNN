@@ -75,13 +75,15 @@ class AdamOptimizer : public Optimizer<WeightT, BiasT, WeightGradT, BiasGradT>
  public:
   auto step(std::span<MlpLayer<WeightT, BiasT, WeightGradT, BiasGradT>> layers, const float lr) noexcept -> void override;
 
+ private:
+  auto initializeIfNeeded(const std::span<MlpLayer<WeightT, BiasT, WeightGradT, BiasGradT>> layers) noexcept -> void;
+
+ public:
   float m_beta1 = 0.9f;
   float m_beta2 = 0.999f;
   float m_epsilon = 1e-8f;
 
  private:
-  auto initializeIfNeeded(const std::span<MlpLayer<WeightT, BiasT, WeightGradT, BiasGradT>> layers) noexcept -> void;
-
   std::vector<std::vector<float>> m_mWeights;
   std::vector<std::vector<float>> m_vWeights;
   std::vector<std::vector<float>> m_mBiases;
@@ -96,13 +98,15 @@ class LionOptimizer : public Optimizer<WeightT, BiasT, WeightGradT, BiasGradT>
  public:
   auto step(std::span<MlpLayer<WeightT, BiasT, WeightGradT, BiasGradT>> layers, const float lr) noexcept -> void override;
 
+ private:
+  auto initializeIfNeeded(const std::span<MlpLayer<WeightT, BiasT, WeightGradT, BiasGradT>> layers) noexcept -> void;
+
+ public:
   float m_beta1 = 0.9f;
   float m_beta2 = 0.99f;
   float m_weightDecay = 0.3f;
 
  private:
-  auto initializeIfNeeded(const std::span<MlpLayer<WeightT, BiasT, WeightGradT, BiasGradT>> layers) noexcept -> void;
-
   std::vector<std::vector<float>> m_mWeights;
   std::vector<std::vector<float>> m_mBiases;
 };
@@ -120,10 +124,10 @@ auto SgdOptimizer<WeightT, BiasT, WeightGradT, BiasGradT>::step(std::span<MlpLay
                                          const float lr) noexcept -> void
 {
   for (auto& layer : layers) {
-    auto wSpan = layer.weightData();
-    auto bSpan = layer.biasData();
-    const auto wGrads = layer.weightGrads();
-    const auto bGrads = layer.biasGrads();
+    std::span<WeightT> wSpan = layer.weightData();
+    std::span<BiasT> bSpan = layer.biasData();
+    const std::span<const WeightGradT> wGrads = layer.weightGrads();
+    const std::span<const BiasGradT> bGrads = layer.biasGrads();
 
     for (size_t j = 0; j < wSpan.size(); ++j) {
       const float w = static_cast<float>(wSpan[j]) - lr * static_cast<float>(wGrads[j]);
@@ -164,10 +168,10 @@ auto AdamOptimizer<WeightT, BiasT, WeightGradT, BiasGradT>::step(std::span<MlpLa
   const float bc2 = 1.0f - std::pow(m_beta2, static_cast<float>(m_timestep));
 
   for (size_t i = 0; i < layers.size(); ++i) {
-    auto wSpan = layers[i].weightData();
-    auto bSpan = layers[i].biasData();
-    const auto wGrads = layers[i].weightGrads();
-    const auto bGrads = layers[i].biasGrads();
+    std::span<WeightT> wSpan = layers[i].weightData();
+    std::span<BiasT> bSpan = layers[i].biasData();
+    const std::span<const WeightGradT> wGrads = layers[i].weightGrads();
+    const std::span<const BiasGradT> bGrads = layers[i].biasGrads();
 
     for (size_t j = 0; j < wSpan.size(); ++j) {
       const float g = static_cast<float>(wGrads[j]);
@@ -215,10 +219,10 @@ auto LionOptimizer<WeightT, BiasT, WeightGradT, BiasGradT>::step(std::span<MlpLa
   const auto sign = [](const float x) -> float { return (x > signEps) ? 1.0f : ((x < -signEps) ? -1.0f : 0.0f); };
 
   for (size_t i = 0; i < layers.size(); ++i) {
-    auto wSpan = layers[i].weightData();
-    auto bSpan = layers[i].biasData();
-    const auto wGrads = layers[i].weightGrads();
-    const auto bGrads = layers[i].biasGrads();
+    std::span<WeightT> wSpan = layers[i].weightData();
+    std::span<BiasT> bSpan = layers[i].biasData();
+    const std::span<const WeightGradT> wGrads = layers[i].weightGrads();
+    const std::span<const BiasGradT> bGrads = layers[i].biasGrads();
 
     for (size_t j = 0; j < wSpan.size(); ++j) {
       const float g = static_cast<float>(wGrads[j]);

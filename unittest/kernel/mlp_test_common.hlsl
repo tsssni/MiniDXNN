@@ -27,8 +27,8 @@ namespace testkernel {
 // ============================================================================
 
 template <typename Type, uint NUM_LAYERS, int HIDDEN_DIM, int INPUT_DIM, int OUTPUT_DIM,
-          dx::linalg::DataType ELEM_TYPE,
-          dx::linalg::MatrixLayout LAYOUT,
+          dx::linalg::ComponentEnum ELEM_TYPE,
+          dx::linalg::MatrixLayoutEnum LAYOUT,
           typename ActivationHiddenT, typename ActivationLastT,
           uint W_ALIGN, uint VS_ALIGN, uint B_ALIGN,
           bool HAS_BIAS>
@@ -84,8 +84,8 @@ void inferenceStep(
 // ============================================================================
 
 template <typename Type, uint NUM_LAYERS, int HIDDEN_DIM, int INPUT_DIM, int OUTPUT_DIM,
-          dx::linalg::DataType ELEM_TYPE,
-          dx::linalg::MatrixLayout LAYOUT,
+          dx::linalg::ComponentEnum ELEM_TYPE,
+          dx::linalg::MatrixLayoutEnum LAYOUT,
           typename ActivationHiddenT, typename ActivationLastT,
           uint W_ALIGN, uint VS_ALIGN, uint B_ALIGN,
           bool HAS_BIAS>
@@ -147,8 +147,8 @@ void trainingForwardStep(
 // ============================================================================
 
 template <typename Type, uint NUM_LAYERS, int HIDDEN_DIM, int INPUT_DIM, int OUTPUT_DIM,
-          dx::linalg::DataType ELEM_TYPE,
-          dx::linalg::MatrixLayout LAYOUT,
+          dx::linalg::ComponentEnum ELEM_TYPE,
+          dx::linalg::MatrixLayoutEnum LAYOUT,
           typename ActivationHiddenT, typename ActivationLastT,
           uint W_ALIGN, uint VS_ALIGN, uint B_ALIGN,
           bool HAS_BIAS>

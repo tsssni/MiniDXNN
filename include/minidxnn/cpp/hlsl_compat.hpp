@@ -472,91 +472,178 @@ struct RWByteAddressBuffer
 
 // ============================================================================
 // dx::linalg namespace — types and stubs for C++ fallback
+//
+// Matches the new dx/linalg.h API (SM 6.10+):
+//   ComponentType::ComponentEnum, MatrixLayout::MatrixLayoutEnum,
+//   Matrix class, VectorRef, Multiply/MultiplyAdd/OuterProduct.
 // ============================================================================
 
 namespace dx {
 namespace linalg {
 
-enum DataType
+// ComponentType enumeration — values match DXIL ComponentType constants
+struct ComponentType
 {
-  DATA_TYPE_SINT16 = 0,
-  DATA_TYPE_UINT16,
-  DATA_TYPE_SINT32,
-  DATA_TYPE_UINT32,
-  DATA_TYPE_FLOAT16,
-  DATA_TYPE_FLOAT32,
-  DATA_TYPE_SINT8_T4_PACKED,
-  DATA_TYPE_UINT8_T4_PACKED,
+  enum ComponentEnum
+  {
+    I8       = 19,
+    I16      = 2,
+    I32      = 4,
+    I64      = 6,
+    U8       = 20,
+    U16      = 3,
+    U32      = 5,
+    U64      = 7,
+    F8_E4M3FN = 21,
+    F8_E5M2  = 22,
+    F16      = 8,
+    F32      = 9,
+    F64      = 10,
+  };
+};
+using ComponentEnum = ComponentType::ComponentEnum;
+
+struct MatrixLayout
+{
+  enum MatrixLayoutEnum
+  {
+    RowMajor                    = 0,
+    ColMajor                    = 1,
+    MulOptimal                  = 2,
+    MulOptimalTranspose         = 3,
+    OuterProductOptimal          = 4,
+    OuterProductOptimalTranspose = 5,
+  };
+};
+using MatrixLayoutEnum = MatrixLayout::MatrixLayoutEnum;
+
+struct MatrixUse
+{
+  enum MatrixUseEnum
+  {
+    A           = 0,
+    B           = 1,
+    Accumulator = 2,
+  };
+};
+using MatrixUseEnum = MatrixUse::MatrixUseEnum;
+
+struct MatrixScope
+{
+  enum MatrixScopeEnum
+  {
+    Thread      = 0,
+    Wave        = 1,
+    ThreadGroup = 2,
+  };
+};
+using MatrixScopeEnum = MatrixScope::MatrixScopeEnum;
+
+// VectorRef — read-only vector buffer reference (matches new dx/linalg.h)
+template <ComponentEnum ElementType, uint DimA>
+struct VectorRef
+{
+  ByteAddressBuffer Buf;
+  uint Offset = 0;
 };
 
-enum MatrixLayout
-{
-  MATRIX_LAYOUT_ROW_MAJOR = 0,
-  MATRIX_LAYOUT_COLUMN_MAJOR,
-  MATRIX_LAYOUT_MUL_OPTIMAL,
-  MATRIX_LAYOUT_OUTER_PRODUCT_OPTIMAL,
-};
-
-template <typename BufferT, DataType ELEM_TYPE, uint ROW_SIZE, uint COLUMN_SIZE,
-          MatrixLayout LAYOUT, bool IS_TRANSPOSED>
-struct MatrixRefImpl
-{
-  BufferT Buffer;
-  uint StartOffset = 0;
-  uint Stride = 0;
-};
-
-template <typename BufferT, DataType ELEM_TYPE>
-struct VectorRefImpl
-{
-  BufferT Buffer;
-  uint StartOffset = 0;
-};
-
-template <DataType ELEM_TYPE, uint ROW_SIZE, uint COLUMN_SIZE,
-          MatrixLayout LAYOUT, bool IS_TRANSPOSED = false>
-using RWMatrixRef = MatrixRefImpl<RWByteAddressBuffer, ELEM_TYPE, ROW_SIZE, COLUMN_SIZE, LAYOUT, IS_TRANSPOSED>;
-
-template <DataType ELEM_TYPE>
-using RWVectorRef = VectorRefImpl<RWByteAddressBuffer, ELEM_TYPE>;
-
-template <typename ElemT, int N, DataType ELEM_TYPE>
+// InterpretedVector — wraps a vector with an interpretation tag
+template <typename T, int N, ComponentEnum DT>
 struct InterpretedVector
 {
-  vector<ElemT, N> Data;
+  vector<T, N> Data;
 };
 
-template <DataType ELEM_TYPE, typename ElemT, int N>
-InterpretedVector<ElemT, N, ELEM_TYPE>
-MakeInterpretedVector(const vector<ElemT, N>& v)
+template <ComponentEnum DT, typename T, int N>
+InterpretedVector<T, N, DT>
+MakeInterpretedVector(const vector<T, N>& v)
 {
-  return InterpretedVector<ElemT, N, ELEM_TYPE>{v};
+  return InterpretedVector<T, N, DT>{v};
 }
 
-// Mul / MulAdd stubs — not used in software fallback path
-template <typename OutputElemT, typename BufferT, DataType MATRIX_ELEM_TYPE,
-          uint ROW_SIZE, uint COLUMN_SIZE, MatrixLayout LAYOUT, bool IS_TRANSPOSED,
-          typename InputElemT, int INPUT_COUNT, DataType INPUT_ELEM_TYPE>
-vector<OutputElemT, ROW_SIZE>
-Mul(const MatrixRefImpl<BufferT, MATRIX_ELEM_TYPE, ROW_SIZE, COLUMN_SIZE, LAYOUT, IS_TRANSPOSED>&,
-    const InterpretedVector<InputElemT, INPUT_COUNT, INPUT_ELEM_TYPE>&)
+// Matrix class — stub for C++ fallback (HW path is never used)
+template <ComponentEnum ComponentTy, int M, int N,
+          MatrixUseEnum Use, MatrixScopeEnum Scope>
+class Matrix
 {
-  assert(false && "dx::linalg::Mul should not be called in CPP fallback mode");
-  return vector<OutputElemT, ROW_SIZE>{};
+public:
+  template <MatrixLayoutEnum Layout>
+  static Matrix Load(ByteAddressBuffer, uint, uint, uint = 128)
+  {
+    assert(false && "dx::linalg::Matrix::Load should not be called in CPP fallback mode");
+    return Matrix{};
+  }
+
+  template <MatrixLayoutEnum Layout>
+  static Matrix Load(RWByteAddressBuffer, uint, uint, uint = 128)
+  {
+    assert(false && "dx::linalg::Matrix::Load should not be called in CPP fallback mode");
+    return Matrix{};
+  }
+
+  void InterlockedAccumulate(RWByteAddressBuffer, uint)
+  {
+    assert(false && "dx::linalg::Matrix::InterlockedAccumulate should not be called in CPP fallback mode");
+  }
+};
+
+// Multiply — stub (HW path is never used in CPP fallback)
+template <typename OutputElTy,
+          ComponentEnum CompTy, int M, int K,
+          MatrixUseEnum Use, MatrixScopeEnum Scope,
+          typename InputElTy>
+vector<OutputElTy, M>
+Multiply(Matrix<CompTy, M, K, Use, Scope>,
+         vector<InputElTy, K>)
+{
+  assert(false && "dx::linalg::Multiply should not be called in CPP fallback mode");
+  return vector<OutputElTy, M>{};
 }
 
-template <typename OutputElemT, typename BufferT, DataType MATRIX_ELEM_TYPE,
-          uint ROW_SIZE, uint COLUMN_SIZE, MatrixLayout LAYOUT, bool IS_TRANSPOSED,
-          typename InputElemT, int INPUT_COUNT, DataType INPUT_ELEM_TYPE,
-          typename BiasBufferT, DataType BIAS_ELEM_TYPE>
-vector<OutputElemT, ROW_SIZE>
-MulAdd(const MatrixRefImpl<BufferT, MATRIX_ELEM_TYPE, ROW_SIZE, COLUMN_SIZE, LAYOUT, IS_TRANSPOSED>&,
-       const InterpretedVector<InputElemT, INPUT_COUNT, INPUT_ELEM_TYPE>&,
-       const VectorRefImpl<BiasBufferT, BIAS_ELEM_TYPE>&)
+// MultiplyAdd with vector bias — stub
+template <typename OutputElTy,
+          ComponentEnum CompTy, int M, int K,
+          MatrixUseEnum Use, MatrixScopeEnum Scope,
+          typename InputElTy, typename BiasElTy>
+vector<OutputElTy, M>
+MultiplyAdd(Matrix<CompTy, M, K, Use, Scope>,
+            vector<InputElTy, K>,
+            vector<BiasElTy, M>)
 {
-  assert(false && "dx::linalg::MulAdd should not be called in CPP fallback mode");
-  return vector<OutputElemT, ROW_SIZE>{};
+  assert(false && "dx::linalg::MultiplyAdd should not be called in CPP fallback mode");
+  return vector<OutputElTy, M>{};
 }
+
+// MultiplyAdd with VectorRef bias — stub
+template <typename OutputElTy,
+          ComponentEnum CompTy, int M, int K,
+          MatrixUseEnum Use, MatrixScopeEnum Scope,
+          typename InputElTy,
+          ComponentEnum BiasElTy, uint BiasDim>
+vector<OutputElTy, M>
+MultiplyAdd(Matrix<CompTy, M, K, Use, Scope>,
+            vector<InputElTy, K>,
+            VectorRef<BiasElTy, BiasDim>)
+{
+  assert(false && "dx::linalg::MultiplyAdd should not be called in CPP fallback mode");
+  return vector<OutputElTy, M>{};
+}
+
+// OuterProduct — stub
+template <ComponentEnum OutTy, typename InputElTy, int M, int N>
+Matrix<OutTy, M, N, MatrixUse::Accumulator, MatrixScope::Thread>
+OuterProduct(vector<InputElTy, M>, vector<InputElTy, N>)
+{
+  assert(false && "dx::linalg::OuterProduct should not be called in CPP fallback mode");
+  return Matrix<OutTy, M, N, MatrixUse::Accumulator, MatrixScope::Thread>{};
+}
+
+// ---- Compatibility aliases for root linalg.h style names ----
+// The incoming cpp_fallback_path.hpp files use these names.
+using DataType = ComponentEnum;
+constexpr ComponentEnum DATA_TYPE_FLOAT16 = ComponentType::F16;
+constexpr ComponentEnum DATA_TYPE_FLOAT32 = ComponentType::F32;
+constexpr MatrixLayoutEnum MATRIX_LAYOUT_ROW_MAJOR = MatrixLayout::RowMajor;
 
 } // namespace linalg
 } // namespace dx
