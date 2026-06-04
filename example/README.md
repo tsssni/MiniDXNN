@@ -6,6 +6,7 @@ Example applications for GPU-accelerated MLP inference and training with DirectX
 
 - [Example 01: Texture Inference](#example-01-texture-inference)
 - [Example 02: Texture Training](#example-02-texture-training)
+- [Example 03: Texture Compression with Input Encoding](#example-03-texture-compression-with-input-encoding)
 - [MLP Model Format](#mlp-model-format)
 
 ---
@@ -22,8 +23,8 @@ Loads a pre-trained MLP binary and reconstructs a texture on the GPU.
 
 ```bash
 pip install torch numpy matplotlib
-cd scripts/pyreference
-python texture_reconstruction_mlp.py            # defaults: 4 hidden layers, 64 neurons, leaky_relu
+cd scripts/reference
+python texture_training.py            # defaults: 4 hidden layers, 64 neurons, leaky_relu
 ```
 
 <details>
@@ -52,7 +53,7 @@ python texture_reconstruction_mlp.py            # defaults: 4 hidden layers, 64 
 
 ```bash
 cd build/example
-Release/01-texture-inference.exe ../../scripts/pyreference/texture-mlp-data.bin output.ppm
+Release/01-texture-inference.exe ../../scripts/reference/texture-mlp-data.bin output.ppm
 ```
 
 | Argument | Required | Default | Description |
@@ -104,11 +105,19 @@ Release/02-texture-training.exe --output-image training-result.ppm
 
 ### GPU Kernel Details
 
-The training compute shaders (`kernel/02_texture_training.comp`) demonstrate:
+The training compute shaders (`example/kernel/02_texture_training.comp`) demonstrate:
 - Using `mininn::TrainingLayerDataRef` to bind weight, bias, gradient, and logits cache buffers
 - Calling `mininn::forward()` followed by `mininn::backward()` for a full training step
 - GPU-side optimizer kernels (SGD, Adam, Lion) that read gradients and update weights directly on the GPU
 - Shared optimizer implementations in `kernel/optimizer.hlsl` that work on packed byte buffers
+
+---
+
+## Example 03: Texture Compression with Input Encoding
+
+Trains an MLP on the GPU to map normalized UV coordinates `(u, v)` to RGB pixel values, optionally using positional or grid input encoding for higher-quality texture compression.
+
+See [`03_texture_compression_with_input_encoding/README.md`](./03_texture_compression_with_input_encoding/README.md) for the full option list, input-encoding modes, and example recipes.
 
 ---
 

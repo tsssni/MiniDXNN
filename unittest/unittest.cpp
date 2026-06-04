@@ -1351,7 +1351,9 @@ TEST_P(LinearAlgebraMatrixTest, CheckFeatureSupport_MatrixMultiply)
     {"(Sint32, Sint8, Sint32)",      kSINT32,   kSINT8,        kSINT32},
     {"(Uint8, Uint8, Sint32)",       kUINT8,    kUINT8,        kSINT32},
     {"(Sint32, Uint8, Sint32)",      kSINT32,   kUINT8,        kSINT32},
+    {"(Fp32, Sint8, Sint32)",       kFLOAT32,    kSINT8,        kSINT32},
     {"(Fp16, Fp16, Fp16)",           kFLOAT16,  kFLOAT16,      kFLOAT16},
+    {"(Fp16, Fp16, Fp32)",           kFLOAT16,  kFLOAT16,      kFLOAT32},
     {"(Fp32, Fp32, Fp32)",           kFLOAT32,  kFLOAT32,      kFLOAT32},
     {"(Fp16, Fp8_E4M3, Fp16)",       kFLOAT16,  kFLOAT8_E4M3FN, kFLOAT16},
     {"(Fp16, Fp8_E5M2, Fp16)",       kFLOAT16,  kFLOAT8_E5M2,  kFLOAT16},
@@ -1392,6 +1394,7 @@ TEST_P(LinearAlgebraMatrixTest, CheckFeatureSupport_MatrixMultiplyAdd)
 
   const MulAddTestCase testCases[] = {
     {"(Fp16, Fp16, Fp16, Fp16)",         kFLOAT16,  kFLOAT16,      kFLOAT16,  kFLOAT16},
+    {"(Fp16, Fp16, Fp32, Fp32)",         kFLOAT16,  kFLOAT16,      kFLOAT32,  kFLOAT32},
     {"(Fp32, Fp32, Fp32, Fp32)",         kFLOAT32,  kFLOAT32,      kFLOAT32,  kFLOAT32},
     {"(Fp16, Fp8_E4M3, Fp16, Fp16)",     kFLOAT16,  kFLOAT8_E4M3FN, kFLOAT16,  kFLOAT16},
     {"(Fp16, Fp8_E5M2, Fp16, Fp16)",     kFLOAT16,  kFLOAT8_E5M2,  kFLOAT16,  kFLOAT16},

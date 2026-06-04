@@ -38,13 +38,13 @@ See [Microsoft's guide][win-dev-mode] for details.
 
 ### 3. Agility SDK
 
-MiniDXNN uses [Agility SDK 1.720-preview][dx12-agility-sdk-download] to access the latest D3D12 features. The SDK is auto-downloaded by CMake when building this project (placed in `third_party/gfx_dep/gfx/third_party/`).
+MiniDXNN uses [Agility SDK 1.721-preview][dx12-agility-sdk-download] to access the latest D3D12 features. The SDK is auto-downloaded by CMake when building this project (placed in `third_party/gfx_dep/gfx/third_party/`).
 
 If integrating manually, download the NuGet package and place the D3D12 runtime DLLs (`D3D12Core.dll`, `d3d12SDKLayers.dll`) in a `D3D12/` subdirectory next to your executable.
 
 ### 4. DirectX Shader Compiler (DXC)
 
-Download [DXC v1.10.2605.2][dx12-dxc-download] or later. This version supports SM 6.10 and the `dx/linalg.h` system header.
+Download [DXC v1.10.2605.4][dx12-dxc-download] or later. This version supports SM 6.10 and the `dx/linalg.h` system header.
 
 Compile with:
 ```bash
@@ -103,7 +103,7 @@ Internally, gfx calls `D3D12EnableExperimentalFeatures` with `D3D12ExperimentalS
 
 **Source reference**:
 - [`third_party/gfx_dep/gfx/gfx.cpp` lines 961–968](../third_party/gfx_dep/gfx/gfx.cpp) — experimental features initialization
-- [`example/common/gfx_utility.cpp` line 46](../example/common/gfx_utility.cpp) — `createGfxContext()` usage
+- [`example/common/gfx_utility.cpp`](../example/common/gfx_utility.cpp) — `createGfxContext()` usage
 
 ---
 
@@ -157,7 +157,7 @@ if (result.supported && result.hardwareAccelerated) {
 ```
 
 **Source reference**:
-- [`third_party/gfx_dep/gfx/gfx.h` lines 549–578](../third_party/gfx_dep/gfx/gfx.h) — feature query API
+- [`third_party/gfx_dep/gfx/gfx.h`](../third_party/gfx_dep/gfx/gfx.h) — feature query API (`gfxGetLinearAlgebraTier`, `gfxCheckMatrixMultiplyAddSupport`, etc.)
 - [D3D12 LinAlg Runtime Spec][linalg-overview] — full query structures
 
 ---
@@ -242,7 +242,7 @@ commandList->ConvertLinearAlgebraMatrix(&convInfo, 1);
 
 **Source reference**:
 - [`example/common/d3d12_format.hpp`](../example/common/d3d12_format.hpp) — alignment constants, `D3D12MatrixInfo`, `getD3D12MatrixInfo()`, `packAsD3D12Matrix()`
-- [`example/common/gfx_utility.hpp` lines 158–258](../example/common/gfx_utility.hpp) — `packAsD3D12MatrixBuffer()` with GPU conversion
+- [`example/common/gfx_utility.hpp`](../example/common/gfx_utility.hpp) — `packAsD3D12MatrixBuffer()` with GPU conversion
 - [D3D12 LinAlg Runtime Spec — Convert Matrix][linalg-overview-convert] — full API specification
 
 ---
@@ -279,9 +279,8 @@ The `packAsD3D12Vector` function:
 3. Zero-pads between vectors to satisfy alignment
 
 **Source reference**:
-- [`example/common/d3d12_format.hpp` lines 162–177](../example/common/d3d12_format.hpp) — `D3D12VectorInfo` struct
-- [`example/common/d3d12_format.hpp` lines 341–403](../example/common/d3d12_format.hpp) — `getD3D12VectorInfo()` and `packAsD3D12Vector()`
-- [`example/common/gfx_utility.hpp` lines 261–268](../example/common/gfx_utility.hpp) — `packAsD3D12VectorBuffer()`
+- [`example/common/d3d12_format.hpp`](../example/common/d3d12_format.hpp) — `D3D12VectorInfo` struct, `getD3D12VectorInfo()`, and `packAsD3D12Vector()`
+- [`example/common/gfx_utility.hpp`](../example/common/gfx_utility.hpp) — `packAsD3D12VectorBuffer()`
 
 ---
 
@@ -333,8 +332,8 @@ GfxKernel kernel = gfxCreateComputeKernel(
 ```
 
 **Source reference**:
-- [`example/common/gfx_utility.cpp` lines 68–88](../example/common/gfx_utility.cpp) — `createGfxProgram()` with SM 6.10
-- [`example/01_texture_inference/example.cpp` lines 303–348](../example/01_texture_inference/example.cpp) — `buildKernelDefinitions()`
+- [`example/common/gfx_utility.cpp`](../example/common/gfx_utility.cpp) — `createGfxProgram()` with SM 6.10
+- [`example/01_texture_inference/example.cpp`](../example/01_texture_inference/example.cpp) — `buildKernelDefinitions()`
 
 ---
 
@@ -501,7 +500,7 @@ void trainStep(uint3 tid : SV_DispatchThreadID)
 | HLSL LinAlg Matrix Spec | [hlsl-specs/proposals/0035-linalg-matrix.md][linalg-spec] |
 | LinAlg Examples | [github.com/llvm-beanz/linalg-examples][linalg-examples] |
 | Blog: D3D12 LinAlg Preview | [devblogs.microsoft.com/directx/d3d12-linalg-preview/][linalg-blog] |
-| SM 6.10 / Agility SDK 720 Preview | [devblogs.microsoft.com/directx/shader-model-6-10-agilitysdk-720-preview/][linalg-driver] |
+| SM 6.10 / Agility SDK 721 Preview | [devblogs.microsoft.com/directx/announcing-agilitysdk-721-preview-and-more-shader-model-6-10-features/][linalg-driver] |
 
 ---
 
@@ -531,7 +530,7 @@ void trainStep(uint3 tid : SV_DispatchThreadID)
 [linalg-overview-convert]: https://microsoft.github.io/DirectX-Specs/d3d/D3D12LinearAlgebraRuntimeFeatureSupport.html#convert-matrix-to-desired-layout-and-type
 [linalg-examples]: https://github.com/llvm-beanz/linalg-examples
 [linalg-blog]: https://devblogs.microsoft.com/directx/d3d12-linalg-preview/
-[linalg-driver]: https://devblogs.microsoft.com/directx/shader-model-6-10-agilitysdk-720-preview/
+[linalg-driver]: https://devblogs.microsoft.com/directx/announcing-agilitysdk-721-preview-and-more-shader-model-6-10-features/
 [win-dev-mode]: https://learn.microsoft.com/en-us/windows/apps/get-started/enable-your-device-for-development
 [dx12-agility-sdk-download]: https://devblogs.microsoft.com/directx/directx12agility/
-[dx12-dxc-download]: https://github.com/microsoft/DirectXShaderCompiler/releases/tag/v1.10.2605.2
+[dx12-dxc-download]: https://github.com/microsoft/DirectXShaderCompiler/releases/tag/v1.10.2605.4

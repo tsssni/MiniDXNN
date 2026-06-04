@@ -14,6 +14,9 @@ RWByteAddressBuffer OutputBuffer;
 ByteAddressBuffer WeightBuffer;
 ByteAddressBuffer BiasBuffer;
 
+// TODO. Fix me
+#define BIAS_VECTOR_ALIGNMENT 128
+
 template <typename Type>
 void testLinearAlgebraMul(const uint threadId)
 {
@@ -45,7 +48,7 @@ void testLinearAlgebraMul(const uint threadId)
   using LinAlg = mininn::impl::LinearAlgebra;
 #if defined(MINIDXNN_HAS_BIAS) && (MINIDXNN_HAS_BIAS != 0)
   // Create a bias reference
-  using BiasT = mininn::impl::VectorRefImpl<ByteAddressBuffer, elemType>;
+  using BiasT = mininn::impl::VectorRefImpl<ByteAddressBuffer, elemType, BIAS_VECTOR_ALIGNMENT>;
   BiasT bias = {BiasBuffer, 0};
 
   output = LinAlg::mulAdd<Type>(matrix, input, bias);
@@ -75,7 +78,7 @@ void testLinearAlgebraVectorAcc(const uint threadId)
   }
 
   // test
-  mininn::impl::RWVectorRef<elemType> output = {OutputBuffer, 0};
+  mininn::impl::RWVectorRef<elemType, BIAS_VECTOR_ALIGNMENT> output = {OutputBuffer, 0};
   mininn::impl::LinearAlgebra::vectorAcc(input, output);
 }
 

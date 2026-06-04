@@ -1,6 +1,6 @@
 # MiniDXNN — MLP Inference & Training on DirectX 12 with LinAlg Matrix
 
-![CMake build on Windows](../../actions/workflows/cmake.yaml/badge.svg)
+![CMake build on Windows](../../../actions/workflows/cmake.yaml/badge.svg)
 
 <p align="center"><img src="./docs/minidxnn-logo.png" width="200"></p>
 
@@ -15,14 +15,14 @@ An implementation of **MLP** (Multi-Layer Perceptron) inference and training usi
 - **OS**: Windows 11 with [Developer Mode][win-dev-mode] enabled
 - **GPU**: Supports Shader Model 6.10 and LinAlg Matrix in D3D12 (AMD Radeon™ RX 9000 Series GPUs or equivalent NVIDIA)
 - **Build**: CMake ≥ 3.21, Visual Studio 2022 (C++20), Windows SDK
-- **DX12 Runtime**: [Agility SDK 1.720-preview][dx12-agility-sdk-download], [DXC v1.10.2605.2][dx12-dxc-download]
+- **DX12 Runtime**: [Agility SDK 1.721-preview][dx12-agility-sdk-download], [DXC v1.10.2605.4][dx12-dxc-download]
 - **Python**: Python 3.8+ with PyTorch (optional, for example python training)
 
 ## Getting Started
 
 ```bash
 # Clone with submodules (gfx, GoogleTest, CLI11)
-git clone --recursive https://github.com/GPUOpen-LibrariesAndSDKs/MiniDXNN.git
+git clone --recursive https://github.com/amdadvtech/MiniDXNN.git
 cd MiniDXNN
 
 # Build (library + examples)
@@ -131,9 +131,10 @@ MiniDXNN/
 │   │   └── ...                    #     Training, inference, and shared kernel headers
 │   ├── 01_texture_inference/      #   Inference from a pre-trained MLP binary
 │   ├── 02_texture_training/       #   On-GPU training + reconstruction
+│   ├── 03_texture_compression_with_input_encoding/  # Training with positional/grid input encoding
 │   └── README.md                  #   Example documentation
-├── scripts/pyreference/           # Python reference implementation
-│   ├── texture_reconstruction_mlp.py  # Train & export MLP model
+├── scripts/reference/             # Python reference implementation
+│   ├── texture_training.py            # Train & export MLP model
 │   └── xoshiro128p.py                 # RNG matching C++ xoshiro128+
 ├── unittest/                      # GoogleTest unit tests
 ├── third_party/                   # Submodules & vendored deps
@@ -194,10 +195,10 @@ When building with GPU support (without `MINIDXNN_CPP_FALLBACK_ONLY`), CMake aut
 
 [linalg-spec]: https://github.com/microsoft/hlsl-specs/blob/main/proposals/0035-linalg-matrix.md
 [linalg-overview]: https://microsoft.github.io/DirectX-Specs/d3d/D3D12LinearAlgebraRuntimeFeatureSupport.html#tier-1-support
-[linalg-driver]: https://devblogs.microsoft.com/directx/shader-model-6-10-agilitysdk-720-preview/
+[linalg-driver]: https://devblogs.microsoft.com/directx/announcing-agilitysdk-721-preview-and-more-shader-model-6-10-features/
 [linalg-examples]: https://github.com/llvm-beanz/linalg-examples
 [win-dev-mode]: https://learn.microsoft.com/en-us/windows/apps/get-started/enable-your-device-for-development
 [dx-enable-experimental-features]: https://learn.microsoft.com/en-us/windows/win32/api/d3d12/nf-d3d12-d3d12enableexperimentalfeatures
 [dx-experimental-shader-model]: https://devblogs.microsoft.com/directx/ser/#availability
 [dx12-agility-sdk-download]: https://devblogs.microsoft.com/directx/directx12agility/
-[dx12-dxc-download]: https://github.com/microsoft/DirectXShaderCompiler/releases/tag/v1.10.2605.2
+[dx12-dxc-download]: https://github.com/microsoft/DirectXShaderCompiler/releases/tag/v1.10.2605.4

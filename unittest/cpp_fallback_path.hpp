@@ -15,6 +15,9 @@
 #ifndef MINIDXNN_UNITTEST_CPP_FALLBACK_PATH_HPP
 #define MINIDXNN_UNITTEST_CPP_FALLBACK_PATH_HPP 1
 
+// TODO. Fix me
+constexpr size_t BIAS_VECTOR_ALIGNMENT = 128;
+
 // ============================================================================
 // C++ fallback helper functions
 // These implement the kernel-equivalent operations using the mlp.hlsl C++ path.
@@ -42,7 +45,7 @@ auto cppFallbackLinearAlgebraMul(const std::vector<std::uint8_t>& weightBuf,
 
   if constexpr (HAS_BIAS) {
     ByteAddressBuffer bBuf{biasBuf};
-    mininn::impl::VectorRefImpl<ByteAddressBuffer, DT> biasRef = {bBuf, 0};
+    mininn::impl::VectorRefImpl<ByteAddressBuffer, DT, BIAS_VECTOR_ALIGNMENT> biasRef = {bBuf, 0};
     result = mininn::impl::LinearAlgebra::mulAdd<Type>(matrix, input, biasRef);
   } else {
     result = mininn::impl::LinearAlgebra::mul<Type>(matrix, input);
@@ -75,7 +78,7 @@ auto cppFallbackVectorAcc(RWByteAddressBuffer& outputBuf, const size_t numTasks)
         for (size_t i = 0; i < static_cast<size_t>(SIZE); ++i)
           input[i] = static_cast<Type>(static_cast<float>(1u << static_cast<unsigned>(i)));
 
-        mininn::impl::RWVectorRef<DT> output = {outputBuf, 0};
+        mininn::impl::RWVectorRef<DT, BIAS_VECTOR_ALIGNMENT> output = {outputBuf, 0};
         mininn::impl::LinearAlgebra::vectorAcc(input, output);
       }
     });

@@ -15,7 +15,7 @@ include(${CMAKE_CURRENT_LIST_DIR}/cmake/project.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/cmake/utility.cmake)
 
 set(project_desc "A minimal DirectX-based neural network library")
-project(MiniDXNN DESCRIPTION ${project_desc} VERSION 0.3.0 LANGUAGES CXX)
+project(MiniDXNN DESCRIPTION ${project_desc} VERSION 0.3.1 LANGUAGES CXX)
 
   # Configure project options (build flags, sanitizers, etc.)
   setProjectOptions()

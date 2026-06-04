@@ -517,14 +517,14 @@ using RWMatrixRef = MatrixRefImpl<RWByteAddressBuffer, DT, M, K, ML, Transpose>;
 
 // VectorRefImpl: local replacement for the removed dx::linalg::VectorRefImpl.
 // Used for RW bias gradient buffers. Read-only bias uses dx::linalg::VectorRef directly.
-template <typename BufferTy, dx::linalg::ComponentEnum DT>
+template <typename BufferTy, dx::linalg::ComponentEnum DT, uint ALIGNMENT>
 struct VectorRefImpl {
   BufferTy Buffer;
   uint StartOffset;
 };
 
-template <dx::linalg::ComponentEnum DT>
-using RWVectorRef = VectorRefImpl<RWByteAddressBuffer, DT>;
+template <dx::linalg::ComponentEnum DT, uint ALIGNMENT>
+using RWVectorRef = VectorRefImpl<RWByteAddressBuffer, DT, ALIGNMENT>;
 
 // precise qualifier: prevents the HLSL compiler from reordering or
 // optimizing floating-point operations that feed into InterlockedCompareExchange
@@ -910,12 +910,13 @@ struct LinearAlgebra
             dx::linalg::MatrixLayoutEnum MATRIX_LAYOUT,
             bool IS_MATRIX_TRANSPOSED,
             typename BiasBufferT,
-            dx::linalg::ComponentEnum BIAS_ELEM_TYPE>
+            dx::linalg::ComponentEnum BIAS_ELEM_TYPE,
+            uint BIAS_VECTOR_ALIGNMENT>
   static
   vector<OutputElemT, ROW_SIZE>
   mulAddSW(__MINIDXNN_IN__(MatrixRefImpl<MatrixBufferT, MATRIX_ELEM_TYPE, ROW_SIZE, COLUMN_SIZE, MATRIX_LAYOUT, IS_MATRIX_TRANSPOSED>) matrix,
            __MINIDXNN_IN__(vector<InputElemT, INPUT_ELEM_COUNT>) input,
-           __MINIDXNN_IN__(VectorRefImpl<BiasBufferT, BIAS_ELEM_TYPE>) bias)
+           __MINIDXNN_IN__(VectorRefImpl<BiasBufferT, BIAS_ELEM_TYPE, BIAS_VECTOR_ALIGNMENT>) bias)
   {
     // mulAddSW only supports RowMajor or ColumnMajor layouts
     using OutputVecT = vector<OutputElemT, ROW_SIZE>;
@@ -938,12 +939,13 @@ struct LinearAlgebra
             dx::linalg::MatrixLayoutEnum MATRIX_LAYOUT,
             bool IS_MATRIX_TRANSPOSED,
             typename BiasBufferT,
-            dx::linalg::ComponentEnum BIAS_ELEM_TYPE>
+            dx::linalg::ComponentEnum BIAS_ELEM_TYPE,
+            uint BIAS_VECTOR_ALIGNMENT>
   static
   vector<OutputElemT, ROW_SIZE>
   mulAddHW(__MINIDXNN_IN__(MatrixRefImpl<MatrixBufferT, MATRIX_ELEM_TYPE, ROW_SIZE, COLUMN_SIZE, MATRIX_LAYOUT, IS_MATRIX_TRANSPOSED>) matrix,
            __MINIDXNN_IN__(vector<InputElemT, INPUT_ELEM_COUNT>) input,
-           __MINIDXNN_IN__(VectorRefImpl<BiasBufferT, BIAS_ELEM_TYPE>) bias)
+           __MINIDXNN_IN__(VectorRefImpl<BiasBufferT, BIAS_ELEM_TYPE, BIAS_VECTOR_ALIGNMENT>) bias)
   {
     using DxMatrixT = dx::linalg::Matrix<MATRIX_ELEM_TYPE, ROW_SIZE, COLUMN_SIZE, dx::linalg::MatrixUse::A, dx::linalg::MatrixScope::Thread>;
     DxMatrixT dxMatrix = DxMatrixT::template Load<MATRIX_LAYOUT>(matrix.Buffer, matrix.StartOffset, matrix.Stride);
@@ -961,12 +963,13 @@ struct LinearAlgebra
             dx::linalg::MatrixLayoutEnum MATRIX_LAYOUT,
             bool IS_MATRIX_TRANSPOSED,
             typename BiasBufferT,
-            dx::linalg::ComponentEnum BIAS_ELEM_TYPE>
+            dx::linalg::ComponentEnum BIAS_ELEM_TYPE,
+            uint BIAS_VECTOR_ALIGNMENT>
   static
   vector<OutputElemT, ROW_SIZE>
   mulAdd(__MINIDXNN_IN__(MatrixRefImpl<MatrixBufferT, MATRIX_ELEM_TYPE, ROW_SIZE, COLUMN_SIZE, MATRIX_LAYOUT, IS_MATRIX_TRANSPOSED>) matrix,
          __MINIDXNN_IN__(vector<InputElemT, INPUT_ELEM_COUNT>) input,
-         __MINIDXNN_IN__(VectorRefImpl<BiasBufferT, BIAS_ELEM_TYPE>) bias)
+         __MINIDXNN_IN__(VectorRefImpl<BiasBufferT, BIAS_ELEM_TYPE, BIAS_VECTOR_ALIGNMENT>) bias)
   {
     using OutputVecT = vector<OutputElemT, ROW_SIZE>;
 
@@ -1040,10 +1043,10 @@ struct LinearAlgebra
 #endif // MINIDXNN_USE_SOFTWARE_LINALG_IMPL
   }
 
-  template <typename ElemT, int SIZE>
+  template <typename ElemT, int SIZE, uint ALIGNMENT>
   static
   void vectorAccSW(__MINIDXNN_IN__(vector<ElemT, SIZE>) input,
-                   RWVectorRef<TypeTraits<ElemT>::COMPONENT_TYPE> vec)
+                   RWVectorRef<TypeTraits<ElemT>::COMPONENT_TYPE, ALIGNMENT> vec)
   {
     for (uint i = 0; i < SIZE; ++i) {
       __MINIDXNN_PRECISE__ const ElemT value = input[i];
@@ -1051,18 +1054,18 @@ struct LinearAlgebra
     }
   }
 
-  template <typename ElemT, int SIZE>
+  template <typename ElemT, int SIZE, uint ALIGNMENT>
   static
   void vectorAccHW(__MINIDXNN_IN__(vector<ElemT, SIZE>) input,
-                 RWVectorRef<TypeTraits<ElemT>::COMPONENT_TYPE> vec)
+                 RWVectorRef<TypeTraits<ElemT>::COMPONENT_TYPE, ALIGNMENT> vec)
   {
-    vectorAccSW(input, vec);
+    dx::linalg::InterlockedAccumulate(input, vec.Buffer, vec.StartOffset, ALIGNMENT);
   }
 
-  template <typename ElemT, int SIZE>
+  template <typename ElemT, int SIZE, uint ALIGNMENT>
   static
   void vectorAcc(__MINIDXNN_IN__(vector<ElemT, SIZE>) input,
-                 RWVectorRef<TypeTraits<ElemT>::COMPONENT_TYPE> vec)
+                 RWVectorRef<TypeTraits<ElemT>::COMPONENT_TYPE, ALIGNMENT> vec)
   {
 #if defined(MINIDXNN_USE_SOFTWARE_LINALG_IMPL) && (MINIDXNN_USE_SOFTWARE_LINALG_IMPL != 0)
     vectorAccSW(input, vec);
@@ -1909,7 +1912,7 @@ struct VectorData<CacheMethod::NO_CACHE>
   struct Ref
   {
     using ElemType = typename impl::ComponentTypeTraits<ELEM_TYPE>::Type;
-    using DxVectorRef = impl::VectorRefImpl<BufferT, ELEM_TYPE>;
+    using DxVectorRef = impl::VectorRefImpl<BufferT, ELEM_TYPE, ALIGNMENT>;
 
 
     template <int DIM>

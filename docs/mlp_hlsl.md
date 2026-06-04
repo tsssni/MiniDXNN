@@ -86,7 +86,7 @@ The base template holding all buffer references for an MLP layer stack. You norm
 | `ACTIVATION_ELEM_TYPE` | Element type for activation computation (default: same as weight) |
 | `WEIGHT_MATRIX_ALIGNMENT` | Weight matrix alignment in bytes (default: 128) |
 | `WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT` | Weight row stride alignment in bytes (default: 16) |
-| `BIAS_VECTOR_ALIGNMENT` | Bias vector alignment in bytes (default: 64) |
+| `BIAS_VECTOR_ALIGNMENT` | Bias vector alignment in bytes (default: 128) |
 
 **Methods:**
 
@@ -120,7 +120,7 @@ mininn::InferenceLayerDataRef<
     ACTIVATION_ELEM_TYPE,     // default: WEIGHT_ELEM_TYPE
     WEIGHT_ALIGNMENT,         // default: 128
     WEIGHT_STRIDE_ALIGNMENT,  // default: 16
-    BIAS_ALIGNMENT            // default: 64
+    BIAS_ALIGNMENT            // default: 128
 >
 ```
 
@@ -245,9 +245,9 @@ Each layer's bias vector (`outputDim`) is padded to `align(outputDim * sizeof(el
 The host code must use the same alignment constants:
 
 ```cpp
-constexpr size_t MATRIX_ALIGNMENT        = 128;  // matches WEIGHT_ALIGNMENT
-constexpr size_t MATRIX_STRIDE_ALIGNMENT = 16;   // matches WEIGHT_STRIDE_ALIGNMENT
-constexpr size_t VECTOR_ALIGNMENT        = 64;   // matches BIAS_ALIGNMENT
+constexpr size_t MATRIX_ALIGNMENT               = 128;  // matches WEIGHT_ALIGNMENT
+constexpr size_t MATRIX_VECTOR_STRIDE_ALIGNMENT = 16;   // matches WEIGHT_STRIDE_ALIGNMENT
+constexpr size_t VECTOR_ALIGNMENT               = 128;  // matches BIAS_ALIGNMENT
 ```
 
 See `example/common/gfx_utility.hpp` (`packAsD3D12MatrixBuffer`, `packAsD3D12VectorBuffer`) for the full GPU buffer packing implementation.

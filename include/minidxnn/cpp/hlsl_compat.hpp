@@ -645,6 +645,13 @@ constexpr ComponentEnum DATA_TYPE_FLOAT16 = ComponentType::F16;
 constexpr ComponentEnum DATA_TYPE_FLOAT32 = ComponentType::F32;
 constexpr MatrixLayoutEnum MATRIX_LAYOUT_ROW_MAJOR = MatrixLayout::RowMajor;
 
+//
+template <typename InputElTy, size_t M>
+void InterlockedAccumulate(vector<InputElTy, M>Vec, RWByteAddressBuffer Res, uint StartOffset, uint Align = 64)
+{
+  assert(false && "dx::linalg::Matrix::InterlockedAccumulate should not be called in CPP fallback mode");
+}
+
 } // namespace linalg
 } // namespace dx
 
