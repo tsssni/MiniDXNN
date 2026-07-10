@@ -162,6 +162,7 @@ auto buildMlpTestDefinitions(const test::TestParameters& testParams,
       ex::createOptionString("MINIDXNN_BIAS_VECTOR_ALIGNMENT={}", biasAlignment),
       ex::createOptionString("MINIDXNN_NUM_THREADS_X={}", testParams.m_numThreadsX),
       ex::createOptionString("MINIDXNN_USE_SOFTWARE_LINALG_IMPL={}", useSoftwareLinAlgImpl ? 1 : 0),
+      ex::createOptionString("MINIDXNN_USE_WAVE_REDUCED_VECTOR_ACC={}", useSoftwareLinAlgImpl ? 0 : 1),
   };
 }
 #endif // !MINIDXNN_CPP_FALLBACK_ONLY

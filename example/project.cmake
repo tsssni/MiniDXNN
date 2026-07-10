@@ -11,7 +11,7 @@ function(setExampleCommon target)
   # cmake dependencies
   include(${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../cmake/compiler.cmake)
 
-  # 
+  #
   add_library(${target} INTERFACE)
   # Add source code
   set(source_files ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/common/matrix.hpp
@@ -30,7 +30,7 @@ function(setExampleCommon target)
                    ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/common/utility.hpp
                    ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/common/xoshiro128plus.hpp
                    )
-  if(NOT MINIDXNN_CPP_FALLBACK_ONLY)
+  if(NOT MINIDXNN_BUILD_CPP_FALLBACK_ONLY)
     list(APPEND source_files
                    ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/common/gfx_utility.hpp
                    ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/common/gfx_utility.cpp
@@ -48,7 +48,7 @@ endfunction(setExampleCommon)
 
 
 function(createHlslIncludeDirsHpp compute_shader_dir binary_dir output_dir)
-  # Compute shader path
+  # Compute shader path relative to the build output directory (where executables run from)
   cmake_path(SET mininn_compute_shader_dir NORMALIZE "${compute_shader_dir}")
   cmake_path(CONVERT "${mininn_compute_shader_dir}" TO_CMAKE_PATH_LIST mininn_compute_shader_dir)
   cmake_path(RELATIVE_PATH mininn_compute_shader_dir BASE_DIRECTORY "${binary_dir}")
@@ -85,7 +85,7 @@ function(buildExample target example_dir hlsl_include_hpp_dir)
   # Copy runtime DLLs to the binary directory (Windows only)
   # This ensures DirectX 12 runtime DLLs are available alongside the executable
   # Skip when building in C++ fallback mode (no GFX DLLs to copy)
-  if(WIN32 AND NOT MINIDXNN_CPP_FALLBACK_ONLY)
+  if(WIN32 AND NOT MINIDXNN_BUILD_CPP_FALLBACK_ONLY)
     add_custom_command(TARGET ${target} POST_BUILD
       COMMAND ${CMAKE_COMMAND} -E copy_if_newer $<TARGET_RUNTIME_DLLS:${target}> $<TARGET_FILE_DIR:${target}>
       COMMAND_EXPAND_LISTS

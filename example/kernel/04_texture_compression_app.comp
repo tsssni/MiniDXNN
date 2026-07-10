@@ -1,7 +1,7 @@
 /*!
-  \file 03_texture_compression_with_input_encoding.comp
+  \file 04_texture_compression_app.comp
   \author Sho Ikeda
-  \brief HLSL compute kernel for texture MLP training with input encoding
+  \brief HLSL compute kernel for the windowed texture MLP training app
   \copyright Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
   SPDX-License-Identifier: MIT
@@ -9,7 +9,6 @@
   Controlled by MINIDXNN_INPUT_ENCODING:
     0 = none (identity, raw UV passed directly to MLP)
     1 = positional encoding (MINIDXNN_POSITIONAL_ENCODING_NUM_FREQUENCIES frequencies, 4*F-dim encoded input)
-    2 = grid encoding (learnable bilinear feature grid)
 */
 
 #include "mlp.hlsl"
@@ -24,6 +23,7 @@ RWByteAddressBuffer WeightGradBuffer;
 RWByteAddressBuffer BiasGradBuffer;
 RWByteAddressBuffer LogitsCacheBuffer;
 RWByteAddressBuffer LossBuffer;
+RWByteAddressBuffer LossGradBuffer;
 RWByteAddressBuffer RWWeightBuffer;
 RWByteAddressBuffer RWBiasBuffer;
 RWByteAddressBuffer OutputBuffer;
@@ -39,14 +39,6 @@ int TEST_BATCH_SIZE;
 int TEST_BIAS_STRIDE;
 int TEST_NUM_INFERENCE_TASKS;
 int OptimizerTimestep;
-
-#if MINIDXNN_INPUT_ENCODING == 2
-ByteAddressBuffer GridBuffer;
-RWByteAddressBuffer GridGradBuffer;
-RWByteAddressBuffer RWGridBuffer;
-RWByteAddressBuffer GridFirstMoment;
-RWByteAddressBuffer GridSecondMoment;
-#endif
 
 // ============================================================================
 // Input encoding (delegates to shared input_encoding_common.hlsl)
@@ -65,34 +57,23 @@ vector<Type, MINIDXNN_INPUT_DIMENSION> encodeInput(const vector<Type, 2> uv)
       >(uv);
 }
 
-#if MINIDXNN_INPUT_ENCODING == 2
-template <typename Type>
-vector<Type, MINIDXNN_INPUT_DIMENSION> encodeInputGrid(
-    const vector<Type, 2> uv,
-    out float4 interpWeights,
-    out uint4 cornerOffsets)
-{
-  return inputenc::encodeInputGrid<Type, MINIDXNN_INPUT_DIMENSION, MINIDXNN_GRID_RESOLUTION>(
-      uv, GridBuffer, interpWeights, cornerOffsets);
-}
-
-template <typename Type>
-void scatterGridGradient(
-    const vector<Type, MINIDXNN_INPUT_DIMENSION> inputGrad,
-    const float4 interpWeights,
-    const uint4 cornerOffsets)
-{
-  inputenc::scatterGridGradient<Type, MINIDXNN_INPUT_DIMENSION>(
-      inputGrad, interpWeights, cornerOffsets, GridGradBuffer);
-}
-#endif
-
 // ============================================================================
-// Training kernel
+// Training kernels (forward and backward as separate passes)
 // ============================================================================
+//
+// trainingForward: runs the MLP forward pass (populating the per-sample logits
+// cache), accumulates the loss, and writes the per-sample loss gradient
+// (dL/doutput) to LossGradBuffer.
+//
+// trainingBackward: re-encodes the input, reads the loss gradient produced by
+// trainingForward, and runs the backward pass (consuming the logits cache and
+// accumulating weight/bias gradients).
+//
+// The two passes are bridged by LogitsCacheBuffer (pre-activations per layer)
+// and LossGradBuffer (loss gradient), both indexed by the per-batch threadId.
 
 template <typename Type>
-void training(const uint threadId)
+void trainingForward(const uint threadId)
 {
   const dx::linalg::ComponentEnum elemType = mininn::impl::TypeTraits<Type>::COMPONENT_TYPE;
   const dx::linalg::MatrixLayoutEnum layout = (dx::linalg::MatrixLayoutEnum)MINIDXNN_WEIGHT_MATRIX_LAYOUT;
@@ -119,13 +100,62 @@ void training(const uint threadId)
   const uint sampleIndex = (uint)TEST_BATCH_INDEX * (uint)TEST_BATCH_SIZE + threadId;
 
   const RawVecT uv = VecAccessor::template load<2>(UvBuffer, sampleIndex * rawStride);
-#if MINIDXNN_INPUT_ENCODING == 2
-  float4 gridInterpWeights;
-  uint4 gridCornerOffsets;
-  const InputVecT encoded = encodeInputGrid<Type>(uv, gridInterpWeights, gridCornerOffsets);
-#else
   const InputVecT encoded = encodeInput<Type>(uv);
-#endif
+
+  LayerDataRef layerData;
+  layerData.setWeightData(WeightBuffer, uint2((uint)TEST_WEIGHT_MATRIX_SIZE_FIRST, (uint)TEST_WEIGHT_MATRIX_SIZE_HIDDEN));
+  if (LayerDataRef::HAS_BIAS) {
+    layerData.setBiasData(BiasBuffer);
+  }
+  layerData.setLogitsCache(LogitsCacheBuffer, threadId * (uint)TEST_BIAS_STRIDE);
+
+  OutputVecT output = (OutputVecT)0;
+  mininn::forward(output, encoded, layerData);
+
+  const OutputVecT target = VecAccessor::template load<MINIDXNN_OUTPUT_DIMENSION>(TargetBuffer, sampleIndex * outStride);
+  const OutputVecT diff = output - target;
+  const float loss = (float)(dot(diff, diff)) / (float)(MINIDXNN_OUTPUT_DIMENSION);
+  // Reduce per-thread loss within the wave so only one atomic is issued per wave
+  // (offset 0 is shared by every thread, so per-thread atomics serialize badly).
+  const float waveLoss = WaveActiveSum(loss);
+  if (WaveIsFirstLane())
+    mininn::impl::atomicFetchAdd(LossBuffer, 0, waveLoss);
+
+  const Type scale = (Type)2 / (Type)((float)(MINIDXNN_OUTPUT_DIMENSION));
+  const Type batchScale = (Type)1 / (Type)((float)(TEST_CURRENT_BATCH_SIZE));
+  const OutputVecT lossGrad = ((Type)(float)MINIDXNN_LOSS_SCALE * scale * batchScale) * diff;
+  VecAccessor::template store<MINIDXNN_OUTPUT_DIMENSION>(LossGradBuffer, threadId * outStride, lossGrad);
+}
+
+template <typename Type>
+void trainingBackward(const uint threadId)
+{
+  const dx::linalg::ComponentEnum elemType = mininn::impl::TypeTraits<Type>::COMPONENT_TYPE;
+  const dx::linalg::MatrixLayoutEnum layout = (dx::linalg::MatrixLayoutEnum)MINIDXNN_WEIGHT_MATRIX_LAYOUT;
+  using ActivationHiddenT = mininn:: MINIDXNN_ACTIVATION_HIDDEN_TYPE;
+  using ActivationLastT = mininn:: MINIDXNN_ACTIVATION_LAST_TYPE;
+  using LayerDataRef = mininn::TrainingLayerDataRef<
+    MINIDXNN_NUM_LAYERS, MINIDXNN_HIDDEN_LAYER_DIMENSIONS,
+    elemType, layout, elemType,
+    elemType, elemType, elemType, elemType,
+    ActivationHiddenT, ActivationLastT, elemType,
+    MINIDXNN_WEIGHT_MATRIX_ALIGNMENT, MINIDXNN_WEIGHT_MATRIX_VECTOR_STRIDE_ALIGNMENT,
+    MINIDXNN_BIAS_VECTOR_ALIGNMENT>;
+
+  if ((uint)TEST_CURRENT_BATCH_SIZE <= threadId)
+    return;
+
+  using RawVecT = vector<Type, 2>;
+  using InputVecT = vector<Type, MINIDXNN_INPUT_DIMENSION>;
+  using OutputVecT = vector<Type, MINIDXNN_OUTPUT_DIMENSION>;
+  using VecAccessor = mininn::impl::VectorBufferAccessor<Type>;
+
+  const uint rawStride = 2u * (uint)sizeof(Type);
+  const uint outStride = (uint)MINIDXNN_OUTPUT_DIMENSION * (uint)sizeof(Type);
+  const uint sampleIndex = (uint)TEST_BATCH_INDEX * (uint)TEST_BATCH_SIZE + threadId;
+
+  const RawVecT uv = VecAccessor::template load<2>(UvBuffer, sampleIndex * rawStride);
+  const InputVecT encoded = encodeInput<Type>(uv);
 
   LayerDataRef layerData;
   layerData.setWeightData(WeightBuffer, uint2((uint)TEST_WEIGHT_MATRIX_SIZE_FIRST, (uint)TEST_WEIGHT_MATRIX_SIZE_HIDDEN));
@@ -136,23 +166,8 @@ void training(const uint threadId)
   }
   layerData.setLogitsCache(LogitsCacheBuffer, threadId * (uint)TEST_BIAS_STRIDE);
 
-  OutputVecT output = (OutputVecT)0;
-  mininn::forward(output, encoded, layerData);
-
-  const OutputVecT target = VecAccessor::template load<MINIDXNN_OUTPUT_DIMENSION>(TargetBuffer, sampleIndex * outStride);
-  const OutputVecT diff = output - target;
-  const float loss = (float)(dot(diff, diff)) / (float)(MINIDXNN_OUTPUT_DIMENSION);
-  mininn::impl::atomicFetchAdd(LossBuffer, 0, loss);
-
-  const Type scale = (Type)2 / (Type)((float)(MINIDXNN_OUTPUT_DIMENSION));
-  const Type batchScale = (Type)1 / (Type)((float)(TEST_CURRENT_BATCH_SIZE));
-  const OutputVecT lossGrad = ((Type)(float)MINIDXNN_LOSS_SCALE * scale * batchScale) * diff;
-#if MINIDXNN_INPUT_ENCODING == 2
-  const InputVecT inputGrad = mininn::backward(lossGrad, encoded, layerData);
-  scatterGridGradient<Type>(inputGrad, gridInterpWeights, gridCornerOffsets);
-#else
+  const OutputVecT lossGrad = VecAccessor::template load<MINIDXNN_OUTPUT_DIMENSION>(LossGradBuffer, threadId * outStride);
   mininn::backward(lossGrad, encoded, layerData);
-#endif
 }
 
 // ============================================================================
@@ -167,10 +182,6 @@ void sgdStep(const uint threadId)
   const float invLS = 1.0f / (float)MINIDXNN_LOSS_SCALE;
   optimizer::sgdElement<Type>(RWWeightBuffer, WeightGradBuffer, (float)MINIDXNN_LEARNING_RATE, invLS, threadId, wTotal);
   optimizer::sgdElement<Type>(RWBiasBuffer, BiasGradBuffer, (float)MINIDXNN_LEARNING_RATE, invLS, threadId, bTotal);
-#if MINIDXNN_INPUT_ENCODING == 2
-  const uint gTotal = MINIDXNN_GRID_BUFFER_SIZE / (uint)sizeof(float32_t);
-  optimizer::sgdElement<float32_t>(RWGridBuffer, GridGradBuffer, (float)MINIDXNN_LEARNING_RATE, invLS, threadId, gTotal);
-#endif
 }
 
 template <typename Type>
@@ -191,14 +202,6 @@ void adamStep(const uint threadId)
       (float)MINIDXNN_LEARNING_RATE,
       MINIDXNN_OPTIMIZER_BETA1, MINIDXNN_OPTIMIZER_BETA2, MINIDXNN_OPTIMIZER_EPSILON,
       bc1, bc2, invLS, threadId, bTotal);
-#if MINIDXNN_INPUT_ENCODING == 2
-  const uint gTotal = MINIDXNN_GRID_BUFFER_SIZE / (uint)sizeof(float32_t);
-  optimizer::adamElement<float32_t>(RWGridBuffer, GridGradBuffer,
-      GridFirstMoment, GridSecondMoment,
-      (float)MINIDXNN_LEARNING_RATE,
-      MINIDXNN_OPTIMIZER_BETA1, MINIDXNN_OPTIMIZER_BETA2, MINIDXNN_OPTIMIZER_EPSILON,
-      bc1, bc2, invLS, threadId, gTotal);
-#endif
 }
 
 template <typename Type>
@@ -219,15 +222,6 @@ void lionStep(const uint threadId)
       MINIDXNN_OPTIMIZER_BETA1, MINIDXNN_OPTIMIZER_BETA2,
       MINIDXNN_OPTIMIZER_WEIGHT_DECAY,
       invLS, threadId, bTotal);
-#if MINIDXNN_INPUT_ENCODING == 2
-  const uint gTotal = MINIDXNN_GRID_BUFFER_SIZE / (uint)sizeof(float32_t);
-  optimizer::lionElement<float32_t>(RWGridBuffer, GridGradBuffer,
-      GridFirstMoment,
-      (float)MINIDXNN_LEARNING_RATE,
-      MINIDXNN_OPTIMIZER_BETA1, MINIDXNN_OPTIMIZER_BETA2,
-      MINIDXNN_OPTIMIZER_WEIGHT_DECAY,
-      invLS, threadId, gTotal);
-#endif
 }
 
 // ============================================================================
@@ -266,13 +260,7 @@ void inference(const uint threadId)
   const uint outStride = (uint)MINIDXNN_OUTPUT_DIMENSION * (uint)sizeof(Type);
 
   const RawVecT uv = VecAccessor::template load<2>(UvBuffer, threadId * rawStride);
-#if MINIDXNN_INPUT_ENCODING == 2
-  float4 gridInterpWeights;
-  uint4 gridCornerOffsets;
-  const InputVecT encoded = encodeInputGrid<Type>(uv, gridInterpWeights, gridCornerOffsets);
-#else
   const InputVecT encoded = encodeInput<Type>(uv);
-#endif
 
   OutputVecT output = (OutputVecT)0;
   if (MINIDXNN_HAS_BIAS) {
@@ -294,17 +282,31 @@ void inference(const uint threadId)
 // ============================================================================
 
 [numthreads(MINIDXNN_NUM_THREADS_X, 1, 1)]
-void trainingF32Kernel(const uint3 groupThreadId : SV_GroupThreadID, const uint3 groupId : SV_GroupID)
+void trainingForwardF32Kernel(const uint3 groupThreadId : SV_GroupThreadID, const uint3 groupId : SV_GroupID)
 {
   const uint threadId = groupId.x * MINIDXNN_NUM_THREADS_X + groupThreadId.x;
-  training<float>(threadId);
+  trainingForward<float>(threadId);
 }
 
 [numthreads(MINIDXNN_NUM_THREADS_X, 1, 1)]
-void trainingF16Kernel(const uint3 groupThreadId : SV_GroupThreadID, const uint3 groupId : SV_GroupID)
+void trainingForwardF16Kernel(const uint3 groupThreadId : SV_GroupThreadID, const uint3 groupId : SV_GroupID)
 {
   const uint threadId = groupId.x * MINIDXNN_NUM_THREADS_X + groupThreadId.x;
-  training<half>(threadId);
+  trainingForward<half>(threadId);
+}
+
+[numthreads(MINIDXNN_NUM_THREADS_X, 1, 1)]
+void trainingBackwardF32Kernel(const uint3 groupThreadId : SV_GroupThreadID, const uint3 groupId : SV_GroupID)
+{
+  const uint threadId = groupId.x * MINIDXNN_NUM_THREADS_X + groupThreadId.x;
+  trainingBackward<float>(threadId);
+}
+
+[numthreads(MINIDXNN_NUM_THREADS_X, 1, 1)]
+void trainingBackwardF16Kernel(const uint3 groupThreadId : SV_GroupThreadID, const uint3 groupId : SV_GroupID)
+{
+  const uint threadId = groupId.x * MINIDXNN_NUM_THREADS_X + groupThreadId.x;
+  trainingBackward<half>(threadId);
 }
 
 [numthreads(MINIDXNN_NUM_THREADS_X, 1, 1)]

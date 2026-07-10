@@ -167,4 +167,3 @@ auto runKernel(GfxContext context, GfxProgram program, GfxKernel kernel, const s
 }
 
 } /* namespace ex */
-

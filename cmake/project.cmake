@@ -22,7 +22,7 @@ function(setMiniDXNNCore target)
   target_include_directories(${target} SYSTEM INTERFACE ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../include)
 
   target_link_libraries(${target} INTERFACE Threads::Threads half-float-dep)
-  if(MINIDXNN_CPP_FALLBACK_ONLY)
+  if(MINIDXNN_BUILD_CPP_FALLBACK_ONLY)
     target_compile_definitions(${target} INTERFACE
       MINIDXNN_CPP_FALLBACK_ONLY=1
       #MINIDXNN_NO_INCLUDE_DX_LINALG=1

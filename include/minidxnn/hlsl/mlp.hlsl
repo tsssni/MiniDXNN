@@ -1062,16 +1062,38 @@ struct LinearAlgebra
     dx::linalg::InterlockedAccumulate(input, vec.Buffer, vec.StartOffset, ALIGNMENT);
   }
 
+  // Bias gradient is a plain element-wise sum over every thread, so all threads
+  // target the same SIZE addresses. Reducing within the wave first means one
+  // atomic per wave per address instead of one per thread, which otherwise
+  // serialize badly through the float CAS loop in atomicFetchAdd.
+  template <typename ElemT, int SIZE, uint ALIGNMENT>
+  static
+  void vectorAccWaveReduced(__MINIDXNN_IN__(vector<ElemT, SIZE>) input,
+                            RWVectorRef<TypeTraits<ElemT>::COMPONENT_TYPE, ALIGNMENT> vec)
+  {
+#ifndef __cplusplus
+    // Reduce in float: summing 32 half lanes in half would lose precision, and
+    // this is strictly more accurate than the original per-thread half atomics.
+    vector<ElemT, SIZE> waveSum;
+    for (uint i = 0; i < SIZE; ++i)
+      waveSum[i] = (ElemT)WaveActiveSum((float)input[i]);
+    if (WaveIsFirstLane())
+      vectorAccSW(waveSum, vec);
+#endif // __cplusplus
+  }
+
   template <typename ElemT, int SIZE, uint ALIGNMENT>
   static
   void vectorAcc(__MINIDXNN_IN__(vector<ElemT, SIZE>) input,
                  RWVectorRef<TypeTraits<ElemT>::COMPONENT_TYPE, ALIGNMENT> vec)
   {
-#if defined(MINIDXNN_USE_SOFTWARE_LINALG_IMPL) && (MINIDXNN_USE_SOFTWARE_LINALG_IMPL != 0)
+#if defined(MINIDXNN_USE_WAVE_REDUCED_VECTOR_ACC) && (MINIDXNN_USE_WAVE_REDUCED_VECTOR_ACC != 0)
+    vectorAccWaveReduced(input, vec);
+#elif defined(MINIDXNN_USE_SOFTWARE_LINALG_IMPL) && (MINIDXNN_USE_SOFTWARE_LINALG_IMPL != 0)
     vectorAccSW(input, vec);
 #else // MINIDXNN_USE_SOFTWARE_LINALG_IMPL
     vectorAccHW(input, vec);
-#endif // MINIDXNN_USE_SOFTWARE_LINALG_IMPL
+#endif // MINIDXNN_USE_WAVE_REDUCED_VECTOR_ACC
   }
 };
 

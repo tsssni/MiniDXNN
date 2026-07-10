@@ -330,7 +330,8 @@ auto buildKernelDefinitions(std::span<ex::MlpLayer<Type, Type, Type, Type>> mlpD
                             const float optimizerBeta1 = 0.0f,
                             const float optimizerBeta2 = 0.0f,
                             const float optimizerEpsilon = 0.0f,
-                            const float optimizerWeightDecay = 0.0f) -> std::vector<ex::OptionString>
+                            const float optimizerWeightDecay = 0.0f,
+                            const bool useWaveReducedVectorAcc = true) -> std::vector<ex::OptionString>
 {
   const size_t inputDim = mlpData.front().inputDimension();
   const size_t outputDim = mlpData.back().outputDimension();
@@ -369,6 +370,7 @@ auto buildKernelDefinitions(std::span<ex::MlpLayer<Type, Type, Type, Type>> mlpD
   defs.push_back(ex::createOptionString("MINIDXNN_WEIGHT_CHUNK_SIZE={}", weightChunkSize));
   defs.push_back(ex::createOptionString("MINIDXNN_BIAS_CHUNK_SIZE={}", biasChunkSize));
   defs.push_back(ex::createOptionString("MINIDXNN_USE_SOFTWARE_LINALG_IMPL={}", useSoftwareLinalg ? 1 : 0));
+  defs.push_back(ex::createOptionString("MINIDXNN_USE_WAVE_REDUCED_VECTOR_ACC={}", useWaveReducedVectorAcc ? 1 : 0));
 
   // Optimizer hyperparameters (passed as compile-time defines to avoid float uniform binding issues)
   defs.push_back(ex::createOptionString("MINIDXNN_OPTIMIZER_BETA1={:.10f}f", optimizerBeta1));

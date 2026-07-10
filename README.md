@@ -132,6 +132,7 @@ MiniDXNN/
 │   ├── 01_texture_inference/      #   Inference from a pre-trained MLP binary
 │   ├── 02_texture_training/       #   On-GPU training + reconstruction
 │   ├── 03_texture_compression_with_input_encoding/  # Training with positional/grid input encoding
+│   ├── 04_texture_compression_app/  # Interactive GUI app with live display and ImGui controls
 │   └── README.md                  #   Example documentation
 ├── scripts/reference/             # Python reference implementation
 │   ├── texture_training.py            # Train & export MLP model
@@ -147,7 +148,7 @@ MiniDXNN/
 | Category | Details |
 |----------|---------|
 | **Architecture** | MLP with 0–N hidden layers, independent input/hidden/output dimensions |
-| **Operations** | Forward pass (inference), backward pass (training with gradient accumulation) |
+| **Operations** | Forward pass (inference), backward pass (training with gradient accumulation), wave-reduced vector accumulation (`WaveActiveSum`-based) |
 | **Activations** | Identity, Sigmoid, ReLU, Leaky ReLU (custom activations supported — e.g. Tanh) |
 | **Data type** | float16 (`DATA_TYPE_FLOAT16`) — currently the only tested type |
 | **Matrix layout** | Row-major, Column-major, Mul-optimal, Outer-product-optimal |
@@ -159,6 +160,7 @@ MiniDXNN/
 | 01 | [Texture Inference](./example/01_texture_inference) | Load a pre-trained MLP binary and reconstruct a texture on the GPU |
 | 02 | [Texture Training](./example/02_texture_training) | Train an MLP on-GPU to learn a 2D texture pattern, then reconstruct it |
 | 03 | [Texture Compression with Input Encoding](./example/03_texture_compression_with_input_encoding) | Train with positional/grid input encoding for higher-quality texture compression |
+| 04 | [Texture Compression App](./example/04_texture_compression_app) | Interactive GUI app — incremental per-frame training with live display and ImGui controls |
 
 See [example/README.md](./example/README.md) for step-by-step instructions.
 

@@ -42,9 +42,14 @@ project(gtest-dep DESCRIPTION "${project_desc}" VERSION 1.17.0 LANGUAGES CXX)
       PDB_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/bin")
 
   # Set workaround of warnings
+  # GoogleTest enables -WX (warnings-as-errors); silence Clang diagnostics that
+  # newer toolchains flag in its headers:
+  #   implicit-int-float-conversion - widening conversions in printers
+  #   character-conversion          - char8_t->char32_t in gtest-printers.h
   set(has_clang $<OR:$<C_COMPILER_ID:Clang>,$<CXX_COMPILER_ID:Clang>,$<C_COMPILER_ID:AppleClang>,$<CXX_COMPILER_ID:AppleClang>>)
-  target_compile_options(gtest PRIVATE $<${has_clang}:-Wno-implicit-int-float-conversion>)
-  target_compile_options(gtest_main PRIVATE $<${has_clang}:-Wno-implicit-int-float-conversion>)
+  set(clang_workarounds -Wno-implicit-int-float-conversion -Wno-character-conversion)
+  target_compile_options(gtest PRIVATE $<${has_clang}:${clang_workarounds}>)
+  target_compile_options(gtest_main PRIVATE $<${has_clang}:${clang_workarounds}>)
 
   # 
   setCxxCompileFlags(gtest PRIVATE)

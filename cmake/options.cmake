@@ -17,38 +17,50 @@ function(setProjectOptions)
 
   # CPU architecture feature level
   # Determines which instruction sets are available (SSE, AVX, AVX2, AVX-512)
-  set(MINIDXNN_ARCH_FEATURE_LEVEL "Amd64V3" CACHE STRING 
+  set(MINIDXNN_COMPILER_ARCH_FEATURE_LEVEL "Amd64V3" CACHE STRING
       "CPU architecture feature level: Amd64V1, Amd64V2, Amd64V3, or Amd64V4")
+  set_property(CACHE MINIDXNN_COMPILER_ARCH_FEATURE_LEVEL PROPERTY STRINGS
+      Amd64V1 Amd64V2 Amd64V3 Amd64V4)
+  if(NOT MINIDXNN_COMPILER_ARCH_FEATURE_LEVEL MATCHES "^Amd64V[1-4]$")
+    message(FATAL_ERROR
+      "MINIDXNN_COMPILER_ARCH_FEATURE_LEVEL must be one of: Amd64V1, Amd64V2, "
+      "Amd64V3, Amd64V4 (got '${MINIDXNN_COMPILER_ARCH_FEATURE_LEVEL}')")
+  endif()
 
-  # Warning options
-  option(MINIDXNN_WARNING_EXTRA 
-    "Enable comprehensive compiler warnings (-Wall, -Wextra, etc.)" 
-    OFF)
+  # Warning level (modeled on premake's `warnings` API)
+  #   off     : disable all warnings
+  #   default : compiler default (no extra warning flags)
+  #   extra   : a reasonable broad set (-Wall -Wextra -pedantic / -W4)
+  #   full    : the maximum set (-Weverything / /Wall) with noise suppressions
+  set(MINIDXNN_COMPILER_WARNINGS "default" CACHE STRING
+      "Compiler warning level: off, default, extra, full")
+  set_property(CACHE MINIDXNN_COMPILER_WARNINGS PROPERTY STRINGS
+      off default extra full)
+  if(NOT MINIDXNN_COMPILER_WARNINGS MATCHES "^(off|default|extra|full)$")
+    message(FATAL_ERROR
+      "MINIDXNN_COMPILER_WARNINGS must be one of: off, default, extra, full "
+      "(got '${MINIDXNN_COMPILER_WARNINGS}')")
+  endif()
 
-  # Sanitizer options for runtime error detection
-  # Note: Sanitizers significantly slow down execution and increase memory usage
-  # Most sanitizers are mutually exclusive (don't enable address + thread simultaneously)
-  option(MINIDXNN_ENABLE_SANITIZER_ADDRESS 
-    "AddressSanitizer: Detect memory errors (buffer overflows, use-after-free, etc.)" 
-    OFF)
-
-  option(MINIDXNN_ENABLE_SANITIZER_UNDEF_BEHAVIOR
-    "UndefinedBehaviorSanitizer: Detect undefined behavior (integer overflow, null deref, etc.)"
-    OFF)
-
-  # TODO: Support other sanitizers
-  #option(MINIDXNN_ENABLE_SANITIZER_THREAD 
-  #  "ThreadSanitizer: Detect data races and threading issues" 
-  #  OFF)
-  #option(MINIDXNN_ENABLE_SANITIZER_MEMORY 
-  #  "MemorySanitizer: Detect reads of uninitialized memory (Clang/LLVM only)" 
-  #  OFF)
-  #option(MINIDXNN_ENABLE_SANITIZER_SAFE_STACK 
-  #  "SafeStack: Protect against stack buffer overflows (Clang only)" 
-  #  OFF)
+  # Sanitizer (modeled on premake's `sanitize` API)
+  #   off               : no sanitizer
+  #   address           : AddressSanitizer (buffer overflow, use-after-free)
+  #   thread            : ThreadSanitizer (data races)
+  #   undefinedbehavior : UndefinedBehaviorSanitizer
+  # Note: sanitizers significantly slow execution and increase memory use;
+  #       the levels are mutually exclusive.
+  set(MINIDXNN_COMPILER_SANITIZER "off" CACHE STRING
+      "Compiler sanitizer: off, address, thread, undefinedbehavior")
+  set_property(CACHE MINIDXNN_COMPILER_SANITIZER PROPERTY STRINGS
+      off address thread undefinedbehavior)
+  if(NOT MINIDXNN_COMPILER_SANITIZER MATCHES "^(off|address|thread|undefinedbehavior)$")
+    message(FATAL_ERROR
+      "MINIDXNN_COMPILER_SANITIZER must be one of: off, address, thread, "
+      "undefinedbehavior (got '${MINIDXNN_COMPILER_SANITIZER}')")
+  endif()
 
   # MiniDXNN options
-  option(MINIDXNN_CPP_FALLBACK_ONLY
+  option(MINIDXNN_BUILD_CPP_FALLBACK_ONLY
     "Build without DirectX 12 / gfx dependency; use C++ fallback for MLP computation"
     OFF)
   option(MINIDXNN_BUILD_EXAMPLES 

@@ -459,7 +459,8 @@ auto buildKernelDefinitions(std::span<ex::MlpLayer<Type, Type, Type, Type>> mlpD
                             const float optimizerBeta2 = 0.0f,
                             const float optimizerEpsilon = 0.0f,
                             const float optimizerWeightDecay = 0.0f,
-                            const float lossScale = 1.0f) -> std::vector<ex::OptionString>
+                            const float lossScale = 1.0f,
+                            const bool useWaveReducedVectorAcc = true) -> std::vector<ex::OptionString>
 {
   const size_t inputDim = mlpData.front().inputDimension();
   const size_t outputDim = mlpData.back().outputDimension();
@@ -500,12 +501,12 @@ auto buildKernelDefinitions(std::span<ex::MlpLayer<Type, Type, Type, Type>> mlpD
 
   // Dispatch configuration
   defs.push_back(ex::createOptionString("MINIDXNN_NUM_THREADS_X={}", numThreadsX));
-  defs.push_back(ex::createOptionString("MINIDXNN_BATCH_SIZE={}", batchSize));
   defs.push_back(ex::createOptionString("MINIDXNN_WEIGHT_BUFFER_SIZE={}", weightBufferSize));
   defs.push_back(ex::createOptionString("MINIDXNN_BIAS_BUFFER_SIZE={}", biasBufferSize));
   defs.push_back(ex::createOptionString("MINIDXNN_WEIGHT_CHUNK_SIZE={}", weightChunkSize));
   defs.push_back(ex::createOptionString("MINIDXNN_BIAS_CHUNK_SIZE={}", biasChunkSize));
   defs.push_back(ex::createOptionString("MINIDXNN_USE_SOFTWARE_LINALG_IMPL={}", useSoftwareLinalg ? 1 : 0));
+  defs.push_back(ex::createOptionString("MINIDXNN_USE_WAVE_REDUCED_VECTOR_ACC={}", useWaveReducedVectorAcc ? 1 : 0));
 
   // Optimizer hyperparameters (passed as compile-time defines to avoid float uniform binding issues)
   defs.push_back(ex::createOptionString("MINIDXNN_OPTIMIZER_BETA1={:.10f}f", optimizerBeta1));
@@ -723,6 +724,7 @@ auto trainAndReconstructTextureGpu(std::span<ex::MlpLayer<Type, Type, Type, Type
                 ex::bind(static_cast<std::int32_t>((matrixInfoList.size() > 1) ? matrixInfoList.at(1).m_dataSize : 0), "TEST_WEIGHT_MATRIX_SIZE_HIDDEN"),
                 ex::bind(static_cast<std::int32_t>(currentBatchSize), "TEST_CURRENT_BATCH_SIZE"),
                 ex::bind(static_cast<std::int32_t>(batchIndex), "TEST_BATCH_INDEX"),
+                ex::bind(static_cast<std::int32_t>(options.m_batchSize), "TEST_BATCH_SIZE"),
                 ex::bind(static_cast<std::int32_t>(biasElements * sizeof(Type)), "TEST_BIAS_STRIDE"),
               },
               kernelTimeMs);
@@ -882,7 +884,7 @@ auto trainAndReconstructTexture(
   if (ex::isCppFallbackForced || options.m_useCppFallback) {
     return trainAndReconstructTextureCppFallback<DataT>(mlpData, uvData, texelData, hasBias, options);
   }
-#ifndef MINIDXNN_CPP_FALLBACK_ONLY
+#ifndef MINIDXNN_CPP_FALLBACK_ONLYB
   else {
     return trainAndReconstructTextureGpu<DataT>(mlpData, uvData, texelData, hasBias, options);
   }

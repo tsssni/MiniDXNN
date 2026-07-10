@@ -19,7 +19,7 @@ project(ThirdParty DESCRIPTION ${project_desc} LANGUAGES CXX)
   checkTarget(half-float-dep)
 
   # Build graphics library (skip in C++ fallback mode)
-  if(NOT MINIDXNN_CPP_FALLBACK_ONLY)
+  if(NOT MINIDXNN_BUILD_CPP_FALLBACK_ONLY)
     add_subdirectory("${PROJECT_SOURCE_DIR}/gfx_dep" "${PROJECT_BINARY_DIR}/gfx_dep")
     checkTarget(gfx-dep)
   endif()
