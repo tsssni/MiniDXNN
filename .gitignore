@@ -40,6 +40,9 @@
 # debug information files
 *.dwo
 
+*.envrc
+.direnv/
+
 clang/
 tmp/
 .cache/
